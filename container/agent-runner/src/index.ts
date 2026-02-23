@@ -48,13 +48,9 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-type ContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
-
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string | ContentBlock[] };
+  message: { role: 'user'; content: string };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -76,16 +72,6 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
-      parent_tool_use_id: null,
-      session_id: '',
-    });
-    this.waiting?.();
-  }
-
-  pushMultimodal(content: ContentBlock[]): void {
-    this.queue.push({
-      type: 'user',
-      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -378,39 +364,29 @@ async function runQuery(
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
 
-  // Extract image file references from prompt and build multimodal content blocks
-  const imagePattern = /\[file: (\/workspace\/[^\]]+\.(?:jpg|jpeg|png|gif|webp))\]/gi;
-  const imageMatches = [...prompt.matchAll(imagePattern)];
+  // Extract [file: ...] references from prompt and replace with plain-text instructions.
+  // The agent can use its built-in Read tool to view images natively.
+  const filePattern = /\[file: (\/workspace\/[^\]]+)\]/gi;
+  const fileMatches = [...prompt.matchAll(filePattern)];
 
-  if (imageMatches.length > 0) {
-    const MIME_TYPES: Record<string, string> = {
-      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-      '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
-    };
-    const blocks: ContentBlock[] = [];
-    // Add text (with file references stripped)
-    const textContent = prompt.replace(imagePattern, '').trim();
-    if (textContent) {
-      blocks.push({ type: 'text', text: textContent });
-    }
-    // Add images as base64 content blocks
-    for (const match of imageMatches) {
+  if (fileMatches.length > 0) {
+    const IMAGE_EXTS = /\.(jpg|jpeg|png|gif|webp)$/i;
+    let textPrompt = prompt.replace(filePattern, '').trim();
+
+    const fileNotes: string[] = [];
+    for (const match of fileMatches) {
       const filePath = match[1];
-      try {
-        const ext = path.extname(filePath).toLowerCase();
-        const mediaType = MIME_TYPES[ext] || 'image/jpeg';
-        const data = fs.readFileSync(filePath).toString('base64');
-        blocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data },
-        });
-        log(`Included image as content block: ${filePath} (${mediaType})`);
-      } catch (err) {
-        log(`Failed to read image ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-        blocks.push({ type: 'text', text: `[could not load image: ${filePath}]` });
+      if (IMAGE_EXTS.test(filePath)) {
+        fileNotes.push(`- Image saved to: ${filePath} (use your Read tool to view it)`);
+        log(`Image file referenced: ${filePath}`);
+      } else {
+        fileNotes.push(`- File saved to: ${filePath}`);
+        log(`File referenced: ${filePath}`);
       }
     }
-    stream.pushMultimodal(blocks);
+
+    textPrompt += '\n\n' + fileNotes.join('\n');
+    stream.push(textPrompt);
   } else {
     stream.push(prompt);
   }
@@ -631,7 +607,6 @@ async function main(): Promise<void> {
     writeOutput({
       status: 'error',
       result: null,
-      newSessionId: sessionId,
       error: errorMessage
     });
     process.exit(1);

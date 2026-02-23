@@ -101,6 +101,12 @@ export class SlackChannel implements Channel {
               logger.warn({ fileId: file.id, status: resp.status }, 'Failed to download Slack file');
               continue;
             }
+            // Slack sometimes returns an HTML login page instead of the file
+            const contentType = resp.headers.get('content-type') || '';
+            if (contentType.includes('text/html')) {
+              logger.warn({ fileId: file.id, contentType }, 'Slack returned HTML instead of file — bot may lack files:read scope');
+              continue;
+            }
             const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
             const filePath = path.join(downloadsDir, safeName);
             const buffer = Buffer.from(await resp.arrayBuffer());
