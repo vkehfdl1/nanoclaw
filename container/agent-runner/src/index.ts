@@ -48,9 +48,13 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -72,6 +76,16 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushMultimodal(content: ContentBlock[]): void {
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -363,7 +377,43 @@ async function runQuery(
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
-  stream.push(prompt);
+
+  // Extract image file references from prompt and build multimodal content blocks
+  const imagePattern = /\[file: (\/workspace\/[^\]]+\.(?:jpg|jpeg|png|gif|webp))\]/gi;
+  const imageMatches = [...prompt.matchAll(imagePattern)];
+
+  if (imageMatches.length > 0) {
+    const MIME_TYPES: Record<string, string> = {
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+    };
+    const blocks: ContentBlock[] = [];
+    // Add text (with file references stripped)
+    const textContent = prompt.replace(imagePattern, '').trim();
+    if (textContent) {
+      blocks.push({ type: 'text', text: textContent });
+    }
+    // Add images as base64 content blocks
+    for (const match of imageMatches) {
+      const filePath = match[1];
+      try {
+        const ext = path.extname(filePath).toLowerCase();
+        const mediaType = MIME_TYPES[ext] || 'image/jpeg';
+        const data = fs.readFileSync(filePath).toString('base64');
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data },
+        });
+        log(`Included image as content block: ${filePath} (${mediaType})`);
+      } catch (err) {
+        log(`Failed to read image ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+        blocks.push({ type: 'text', text: `[could not load image: ${filePath}]` });
+      }
+    }
+    stream.pushMultimodal(blocks);
+  } else {
+    stream.push(prompt);
+  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -414,9 +464,12 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const model = process.env.CLAUDE_MODEL || undefined;
+
   for await (const message of query({
     prompt: stream,
     options: {
+      model,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,

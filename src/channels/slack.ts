@@ -1,6 +1,9 @@
+import fs from 'fs';
+import path from 'path';
+
 import { App, LogLevel } from '@slack/bolt';
 
-import { ASSISTANT_NAME } from '../config.js';
+import { ASSISTANT_NAME, GROUPS_DIR } from '../config.js';
 import { updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
@@ -44,15 +47,14 @@ export class SlackChannel implements Channel {
 
     // Listen for all messages in channels the bot is in
     this.app.message(async ({ message, client }) => {
-      // Skip bot messages, subtypes (edits, deletes, etc.), and thread replies
-      if (
-        message.subtype ||
-        !('text' in message) ||
-        !message.text ||
-        ('bot_id' in message && message.bot_id)
-      ) {
-        return;
-      }
+      // Skip bot messages and non-user subtypes (edits, deletes, etc.)
+      // Allow file_share subtype through for file uploads
+      if ('bot_id' in message && message.bot_id) return;
+      if (message.subtype && message.subtype !== 'file_share') return;
+
+      const hasText = 'text' in message && message.text;
+      const hasFiles = 'files' in message && Array.isArray(message.files) && message.files.length > 0;
+      if (!hasText && !hasFiles) return;
 
       const channelId = message.channel;
       const chatJid = `slack:${channelId}`;
@@ -69,9 +71,10 @@ export class SlackChannel implements Channel {
       if (!groups[chatJid]) return;
 
       // Resolve sender display name
-      let senderName = message.user || 'unknown';
+      const userId = ('user' in message ? message.user : undefined) || 'unknown';
+      let senderName = userId;
       try {
-        const userInfo = await client.users.info({ user: message.user as string });
+        const userInfo = await client.users.info({ user: userId });
         senderName =
           userInfo.user?.profile?.display_name ||
           userInfo.user?.real_name ||
@@ -81,14 +84,52 @@ export class SlackChannel implements Channel {
         // Fall back to user ID
       }
 
-      const fromMe = message.user === this.botUserId;
+      // Download any attached files into the group workspace
+      const filePaths: string[] = [];
+      if (hasFiles) {
+        const group = groups[chatJid];
+        const downloadsDir = path.join(GROUPS_DIR, group.folder, 'downloads');
+        fs.mkdirSync(downloadsDir, { recursive: true });
+
+        for (const file of (message as { files: Array<{ id: string; name: string; url_private_download?: string }> }).files) {
+          if (!file.url_private_download) continue;
+          try {
+            const resp = await fetch(file.url_private_download, {
+              headers: { Authorization: `Bearer ${this.opts.botToken}` },
+            });
+            if (!resp.ok) {
+              logger.warn({ fileId: file.id, status: resp.status }, 'Failed to download Slack file');
+              continue;
+            }
+            const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+            const filePath = path.join(downloadsDir, safeName);
+            const buffer = Buffer.from(await resp.arrayBuffer());
+            fs.writeFileSync(filePath, buffer);
+            // Path as seen inside the container
+            filePaths.push(`/workspace/group/downloads/${safeName}`);
+            logger.info({ fileId: file.id, name: file.name, path: filePath }, 'Slack file downloaded');
+          } catch (err) {
+            logger.error({ fileId: file.id, err }, 'Error downloading Slack file');
+          }
+        }
+      }
+
+      // Build message content with file references
+      let content = ('text' in message ? message.text : '') || '';
+      if (filePaths.length > 0) {
+        const fileList = filePaths.map(p => `[file: ${p}]`).join('\n');
+        content = content ? `${content}\n${fileList}` : fileList;
+      }
+      if (!content) return;
+
+      const fromMe = userId === this.botUserId;
 
       this.opts.onMessage(chatJid, {
         id: message.ts,
         chat_jid: chatJid,
-        sender: message.user || '',
+        sender: userId,
         sender_name: senderName,
-        content: message.text,
+        content,
         timestamp,
         is_from_me: fromMe,
         is_bot_message: fromMe,
@@ -162,6 +203,23 @@ export class SlackChannel implements Channel {
 
   ownsJid(jid: string): boolean {
     return jid.startsWith('slack:');
+  }
+
+  async sendFile(jid: string, filePath: string, comment?: string): Promise<void> {
+    const channelId = jid.replace('slack:', '');
+    try {
+      const fileContent = fs.readFileSync(filePath);
+      const filename = path.basename(filePath);
+      await this.app.client.filesUploadV2({
+        channel_id: channelId,
+        file: fileContent,
+        filename,
+        initial_comment: comment ? `*${ASSISTANT_NAME}:* ${comment}` : undefined,
+      });
+      logger.info({ jid, filename }, 'Slack file uploaded');
+    } catch (err) {
+      logger.error({ jid, filePath, err }, 'Failed to upload Slack file');
+    }
   }
 
   async disconnect(): Promise<void> {

@@ -63,6 +63,36 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  'Upload a file to the user or group chat. The file must exist on disk (in your workspace). Use this to share generated files, images, documents, etc.',
+  {
+    file_path: z.string().describe('Absolute path to the file to upload (e.g., /workspace/group/report.pdf)'),
+    comment: z.string().optional().describe('Optional message to send alongside the file'),
+  },
+  async (args) => {
+    if (!fs.existsSync(args.file_path)) {
+      return {
+        content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
+        isError: true,
+      };
+    }
+
+    const data: Record<string, string | undefined> = {
+      type: 'file',
+      chatJid,
+      filePath: args.file_path,
+      comment: args.comment || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `File "${path.basename(args.file_path)}" sent.` }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
 
