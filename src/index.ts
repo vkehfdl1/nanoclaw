@@ -6,8 +6,11 @@ import {
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  SLACK_APP_TOKEN,
+  SLACK_BOT_TOKEN,
   TRIGGER_PATTERN,
 } from './config.js';
+import { SlackChannel } from './channels/slack.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
 import {
   ContainerOutput,
@@ -48,7 +51,8 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel;
+let whatsapp: WhatsAppChannel | undefined;
+let slack: SlackChannel | undefined;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -445,9 +449,15 @@ async function main(): Promise<void> {
   };
 
   // Create and connect channels
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  await whatsapp.connect();
+  if (SLACK_BOT_TOKEN && SLACK_APP_TOKEN) {
+    slack = new SlackChannel({ ...channelOpts, botToken: SLACK_BOT_TOKEN, appToken: SLACK_APP_TOKEN });
+    channels.push(slack);
+    await slack.connect();
+  } else {
+    whatsapp = new WhatsAppChannel(channelOpts);
+    channels.push(whatsapp);
+    await whatsapp.connect();
+  }
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -473,7 +483,11 @@ async function main(): Promise<void> {
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) => whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroupMetadata: (force) => {
+      if (whatsapp) return whatsapp.syncGroupMetadata(force);
+      if (slack) return slack.syncChannels();
+      return Promise.resolve();
+    },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
   });

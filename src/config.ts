@@ -9,12 +9,18 @@ import { readEnvFile } from './env.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'SLACK_BOT_TOKEN',
+  'SLACK_APP_TOKEN',
 ]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER || envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+export const SLACK_BOT_TOKEN =
+  process.env.SLACK_BOT_TOKEN || envConfig.SLACK_BOT_TOKEN || '';
+export const SLACK_APP_TOKEN =
+  process.env.SLACK_APP_TOKEN || envConfig.SLACK_APP_TOKEN || '';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
