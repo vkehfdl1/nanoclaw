@@ -69,7 +69,6 @@ export const TRIGGER_PATTERN = new RegExp(
   'i',
 );
 
-// Timezone for scheduled tasks (cron expressions, etc.)
-// Uses system timezone by default
-export const TIMEZONE =
-  process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+// Timezone for scheduled tasks and container runtime local time.
+// Defaults to Asia/Seoul; can still be overridden via TZ.
+export const TIMEZONE = process.env.TZ || 'Asia/Seoul';

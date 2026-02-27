@@ -189,7 +189,7 @@ function readSecrets(): Record<string, string> {
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
-  // Pass host timezone so container's local time matches the user's
+  // Set container timezone for local-time parsing/rendering consistency
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Pass model override if configured
