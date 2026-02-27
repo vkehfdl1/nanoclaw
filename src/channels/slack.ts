@@ -6,6 +6,7 @@ import { App, LogLevel } from '@slack/bolt';
 import { ASSISTANT_NAME, GROUPS_DIR } from '../config.js';
 import { updateChatName } from '../db.js';
 import { logger } from '../logger.js';
+import { formatOutbound } from '../router.js';
 import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
 
 export interface SlackChannelOpts {
@@ -32,6 +33,14 @@ export class SlackChannel implements Channel {
       socketMode: true,
       logLevel: LogLevel.WARN,
     });
+  }
+
+  private getAssistantLabel(jid: string): string {
+    const group = this.opts.registeredGroups()[jid];
+    const trigger = group?.trigger?.trim();
+    if (!trigger) return ASSISTANT_NAME;
+    const label = trigger.startsWith('@') ? trigger.slice(1).trim() : trigger;
+    return label || ASSISTANT_NAME;
   }
 
   async connect(): Promise<void> {
@@ -190,14 +199,17 @@ export class SlackChannel implements Channel {
 
   async sendMessage(jid: string, text: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
+    const assistantLabel = this.getAssistantLabel(jid);
+    const outbound = formatOutbound(text);
+    if (!outbound) return;
     try {
       await this.app.client.chat.postMessage({
         channel: channelId,
-        text: `*${ASSISTANT_NAME}:* ${text}`,
+        text: `*${assistantLabel}:* ${outbound}`,
         // Use mrkdwn so the bot name is bold
         mrkdwn: true,
       });
-      logger.info({ jid, length: text.length }, 'Slack message sent');
+      logger.info({ jid, length: outbound.length }, 'Slack message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Slack message');
     }
@@ -213,6 +225,7 @@ export class SlackChannel implements Channel {
 
   async sendFile(jid: string, filePath: string, comment?: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
+    const assistantLabel = this.getAssistantLabel(jid);
     try {
       const fileContent = fs.readFileSync(filePath);
       const filename = path.basename(filePath);
@@ -220,7 +233,7 @@ export class SlackChannel implements Channel {
         channel_id: channelId,
         file: fileContent,
         filename,
-        initial_comment: comment ? `*${ASSISTANT_NAME}:* ${comment}` : undefined,
+        initial_comment: comment ? `*${assistantLabel}:* ${comment}` : undefined,
       });
       logger.info({ jid, filename }, 'Slack file uploaded');
     } catch (err) {

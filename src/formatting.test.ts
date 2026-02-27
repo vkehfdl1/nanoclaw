@@ -163,6 +163,24 @@ describe('stripInternalTags', () => {
   it('returns empty string when text is only internal tags', () => {
     expect(stripInternalTags('<internal>only this</internal>')).toBe('');
   });
+
+  it('strips malformed internal block closed with </invoke>', () => {
+    expect(stripInternalTags('hello <internal>secret</invoke> world')).toBe(
+      'hello  world',
+    );
+  });
+
+  it('strips from unclosed <internal> to EOF', () => {
+    expect(stripInternalTags('hello <internal>secret')).toBe('hello');
+  });
+
+  it('strips entire text when it starts with unclosed <internal>', () => {
+    expect(stripInternalTags('<internal>secret')).toBe('');
+  });
+
+  it('removes stray invoke tags', () => {
+    expect(stripInternalTags('hello </invoke> world')).toBe('hello  world');
+  });
 });
 
 describe('formatOutbound', () => {
@@ -178,6 +196,10 @@ describe('formatOutbound', () => {
     expect(
       formatOutbound('<internal>thinking</internal>The answer is 42'),
     ).toBe('The answer is 42');
+  });
+
+  it('returns only safe prefix for unclosed internal tags', () => {
+    expect(formatOutbound('A <internal>hidden')).toBe('A');
   });
 });
 

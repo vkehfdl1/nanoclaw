@@ -190,9 +190,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      const text = formatOutbound(raw);
+      logger.info(
+        {
+          group: group.name,
+          removedInternal: text !== raw.trim(),
+          preview: text.slice(0, 200),
+        },
+        'Agent output processed',
+      );
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -479,7 +485,9 @@ async function main(): Promise<void> {
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      const outbound = formatOutbound(text);
+      if (!outbound) return Promise.resolve();
+      return channel.sendMessage(jid, outbound);
     },
     sendFile: (jid, filePath, comment) => {
       const channel = findChannel(channels, jid);

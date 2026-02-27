@@ -17,7 +17,24 @@ export function formatMessages(messages: NewMessage[]): string {
 }
 
 export function stripInternalTags(text: string): string {
-  return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+  let sanitized = text;
+
+  // Remove complete internal blocks, including the malformed </invoke> closer.
+  sanitized = sanitized.replace(/<internal>[\s\S]*?<\/(?:internal|invoke)>/gi, '');
+
+  // If any <internal> remains unclosed, drop everything after it to avoid leaks.
+  const lower = sanitized.toLowerCase();
+  const unclosedStart = lower.indexOf('<internal>');
+  if (unclosedStart !== -1) {
+    sanitized = sanitized.slice(0, unclosedStart);
+  }
+
+  // Remove stray tag tokens if they appear standalone.
+  sanitized = sanitized
+    .replace(/<\/?internal>/gi, '')
+    .replace(/<\/?invoke>/gi, '');
+
+  return sanitized.trim();
 }
 
 export function formatOutbound(rawText: string): string {

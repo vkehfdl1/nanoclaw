@@ -13,6 +13,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { formatOutbound } from './router.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -79,11 +80,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
               if (data.type === 'message' && data.chatJid && data.text) {
                 if (authorized) {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
+                  const outbound = formatOutbound(data.text);
+                  if (outbound) {
+                    await deps.sendMessage(data.chatJid, outbound);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC message sent',
+                    );
+                  } else {
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC message dropped after sanitization',
+                    );
+                  }
                 } else {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
