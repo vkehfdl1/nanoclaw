@@ -147,9 +147,26 @@ function buildVolumeMounts(
 
     for (const skillDir of fs.readdirSync(sourcePath)) {
       const srcDir = path.join(sourcePath, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(srcDir);
+      } catch (err) {
+        logger.warn(
+          { sourcePath, skillDir, err },
+          'Skipping unreadable skill entry during skill sync',
+        );
+        continue;
+      }
+      if (!stat.isDirectory()) continue;
       const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
+      try {
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+      } catch (err) {
+        logger.warn(
+          { sourcePath, skillDir, err },
+          'Failed to copy skill entry during skill sync',
+        );
+      }
     }
   }
   mounts.push({
