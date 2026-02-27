@@ -28,6 +28,7 @@ import {
   getNewMessages,
   getRouterState,
   initDatabase,
+  deleteSession,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -128,6 +129,31 @@ export function _setRegisteredGroups(groups: Record<string, RegisteredGroup>): v
   registeredGroups = groups;
 }
 
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isClearCommand(content: string, group: RegisteredGroup): boolean {
+  const trimmed = content.trim();
+  if (/^\/clear(?:\s+.*)?$/i.test(trimmed)) return true;
+
+  const trigger = group.trigger?.trim();
+  if (!trigger) return false;
+  const triggerRegex = new RegExp(
+    `^${escapeRegex(trigger)}\\s+\\/clear(?:\\s+.*)?$`,
+    'i',
+  );
+  return triggerRegex.test(trimmed);
+}
+
+function clearGroupSession(chatJid: string, groupFolder: string): void {
+  delete sessions[groupFolder];
+  deleteSession(groupFolder);
+  // If a container is active, ask it to close so it doesn't continue on stale context.
+  queue.closeStdin(chatJid);
+  logger.info({ chatJid, groupFolder }, 'Session cleared');
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -148,6 +174,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
 
   if (missedMessages.length === 0) return true;
+
+  const latestClear = [...missedMessages]
+    .reverse()
+    .find((m) => isClearCommand(m.content, group));
+  if (latestClear) {
+    clearGroupSession(chatJid, group.folder);
+    lastAgentTimestamp[chatJid] = latestClear.timestamp;
+    saveState();
+    await channel.sendMessage(
+      chatJid,
+      'Session cleared. I will continue in a fresh session from your next message.',
+    );
+    return true;
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -245,6 +285,14 @@ async function runAgent(
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
 
+  const shouldAcceptSessionUpdate = (): boolean => {
+    // If a clear happened while this run was active, keep the session cleared.
+    if (sessionId && !sessions[group.folder]) {
+      return false;
+    }
+    return true;
+  };
+
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
   writeTasksSnapshot(
@@ -273,7 +321,11 @@ async function runAgent(
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
-        if (output.newSessionId && output.status !== 'error') {
+        if (
+          output.newSessionId &&
+          output.status !== 'error' &&
+          shouldAcceptSessionUpdate()
+        ) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
@@ -296,7 +348,11 @@ async function runAgent(
       wrappedOnOutput,
     );
 
-    if (output.newSessionId && output.status !== 'error') {
+    if (
+      output.newSessionId &&
+      output.status !== 'error' &&
+      shouldAcceptSessionUpdate()
+    ) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
     }
@@ -360,6 +416,20 @@ async function startMessageLoop(): Promise<void> {
 
           const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+
+          const latestClear = [...groupMessages]
+            .reverse()
+            .find((m) => isClearCommand(m.content, group));
+          if (latestClear) {
+            clearGroupSession(chatJid, group.folder);
+            lastAgentTimestamp[chatJid] = latestClear.timestamp;
+            saveState();
+            await channel.sendMessage(
+              chatJid,
+              'Session cleared. I will continue in a fresh session from your next message.',
+            );
+            continue;
+          }
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
@@ -504,6 +574,7 @@ async function main(): Promise<void> {
     },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    clearSession: (jid, groupFolder) => clearGroupSession(jid, groupFolder),
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

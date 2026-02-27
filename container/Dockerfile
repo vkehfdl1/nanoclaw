@@ -24,6 +24,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     curl \
     git \
     tzdata \
+    openjdk-17-jdk \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -35,8 +36,12 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
 RUN ln -snf /usr/share/zoneinfo/Asia/Seoul /etc/localtime \
     && echo Asia/Seoul > /etc/timezone
 
-# Set Chromium path for agent-browser
+# Set runtime environment
 ENV TZ=Asia/Seoul
+RUN JDK_PATH="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" \
+    && ln -sfn "$JDK_PATH" /usr/lib/jvm/java-17-openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 

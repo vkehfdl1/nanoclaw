@@ -29,6 +29,7 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  clearSession: (chatJid: string, groupFolder: string) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -291,6 +292,38 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'clear_session': {
+      const targetJid = (isMain && data.targetJid)
+        ? data.targetJid
+        : data.targetJid || data.chatJid;
+      if (!targetJid) {
+        logger.warn({ sourceGroup }, 'clear_session missing target JID');
+        break;
+      }
+
+      const targetGroupEntry = registeredGroups[targetJid];
+      if (!targetGroupEntry) {
+        logger.warn({ targetJid }, 'Cannot clear session: target group not registered');
+        break;
+      }
+
+      const targetFolder = targetGroupEntry.folder;
+      if (!isMain && targetFolder !== sourceGroup) {
+        logger.warn(
+          { sourceGroup, targetFolder },
+          'Unauthorized clear_session attempt blocked',
+        );
+        break;
+      }
+
+      deps.clearSession(targetJid, targetFolder);
+      logger.info(
+        { sourceGroup, targetJid, targetFolder },
+        'Session cleared via IPC',
+      );
+      break;
+    }
 
     case 'pause_task':
       if (data.taskId) {

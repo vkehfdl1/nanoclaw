@@ -3,9 +3,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   createTask,
+  deleteSession,
   getAllTasks,
   getRegisteredGroup,
+  getSession,
   getTaskById,
+  setSession,
   setRegisteredGroup,
 } from './db.js';
 import { processTaskIpc, IpcDeps } from './ipc.js';
@@ -62,6 +65,9 @@ beforeEach(() => {
     syncGroupMetadata: async () => {},
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
+    clearSession: (_chatJid, groupFolder) => {
+      deleteSession(groupFolder);
+    },
   };
 });
 
@@ -608,5 +614,42 @@ describe('register_group success', () => {
     );
 
     expect(getRegisteredGroup('partial@g.us')).toBeUndefined();
+  });
+});
+
+// --- clear_session authorization ---
+
+describe('clear_session authorization', () => {
+  beforeEach(() => {
+    setSession('other-group', 'session-other');
+    setSession('main', 'session-main');
+  });
+
+  it('main group can clear another group session', async () => {
+    await processTaskIpc(
+      {
+        type: 'clear_session',
+        targetJid: 'other@g.us',
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(getSession('other-group')).toBeUndefined();
+  });
+
+  it('non-main group cannot clear another group session', async () => {
+    await processTaskIpc(
+      {
+        type: 'clear_session',
+        targetJid: 'main@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(getSession('main')).toBe('session-main');
   });
 });

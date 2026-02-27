@@ -205,16 +205,22 @@ function readSecrets(): Record<string, string> {
   return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 }
 
-function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
+function buildContainerArgs(
+  group: RegisteredGroup,
+  mounts: VolumeMount[],
+  containerName: string,
+): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Set container timezone for local-time parsing/rendering consistency
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Pass model override if configured
+  // Pass model override if configured (per-group takes precedence)
   const extraEnv = readEnvFile(['CLAUDE_MODEL', 'GITHUB_TOKEN']);
-  if (extraEnv.CLAUDE_MODEL) {
-    args.push('-e', `CLAUDE_MODEL=${extraEnv.CLAUDE_MODEL}`);
+  const groupModel = group.containerConfig?.model?.trim();
+  const selectedModel = groupModel || extraEnv.CLAUDE_MODEL;
+  if (selectedModel) {
+    args.push('-e', `CLAUDE_MODEL=${selectedModel}`);
   }
   if (extraEnv.GITHUB_TOKEN) {
     args.push('-e', `GITHUB_TOKEN=${extraEnv.GITHUB_TOKEN}`);
@@ -257,7 +263,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(group, mounts, containerName);
 
   logger.debug(
     {

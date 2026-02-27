@@ -34,6 +34,26 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
+You can define reusable programmatic sub-agents by writing JSON in either:
+- `/workspace/group/.nanoclaw/subagents.json`
+- `/workspace/group/.claude/subagents.json`
+
+Format:
+```json
+{
+  "agents": {
+    "researcher": {
+      "description": "Use for deep web research",
+      "prompt": "You are a focused researcher. Provide sources and concise summaries.",
+      "tools": ["WebSearch", "WebFetch", "Read", "TodoWrite"],
+      "model": "sonnet"
+    }
+  }
+}
+```
+
+Valid `model` values in this file: `sonnet`, `opus`, `haiku`, `inherit`.
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
@@ -172,6 +192,7 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
     "trigger": "@Andy",
     "added_at": "2026-01-31T12:00:00Z",
     "containerConfig": {
+      "model": "claude-sonnet-4-6",
       "additionalMounts": [
         {
           "hostPath": "~/projects/webapp",

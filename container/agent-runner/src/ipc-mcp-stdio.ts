@@ -218,6 +218,31 @@ server.tool(
 );
 
 server.tool(
+  'clear_session',
+  'Clear the current group session so the next request starts fresh. Main group can optionally target another registered group.',
+  {
+    target_group_jid: z.string().optional().describe('(Main group only) target group JID to clear. Defaults to current group.'),
+  },
+  async (args) => {
+    const targetJid = isMain && args.target_group_jid ? args.target_group_jid : chatJid;
+
+    const data = {
+      type: 'clear_session',
+      targetJid,
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Session clear requested for ${targetJid}.` }],
+    };
+  },
+);
+
+server.tool(
   'pause_task',
   'Pause a scheduled task. It will not run until resumed.',
   { task_id: z.string().describe('The task ID to pause') },
@@ -276,14 +301,16 @@ server.tool(
 
 server.tool(
   'register_group',
-  `Register a new WhatsApp group so the agent can respond to messages there. Main group only.
+  `Register a new chat/group so the agent can respond there. Main group only.
 
-Use available_groups.json to find the JID for a group. The folder name should be lowercase with hyphens (e.g., "family-chat").`,
+Use available_groups.json to find the JID for a group. The folder name should be lowercase with hyphens (e.g., "family-chat"). For Slack use "slack:<CHANNEL_ID>" (e.g., "slack:C12345678").`,
   {
-    jid: z.string().describe('The WhatsApp JID (e.g., "120363336345536173@g.us")'),
+    jid: z.string().describe('Channel/group JID (e.g., "120363...@g.us" or "slack:C12345678")'),
     name: z.string().describe('Display name for the group'),
     folder: z.string().describe('Folder name for group files (lowercase, hyphens, e.g., "family-chat")'),
     trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
+    requires_trigger: z.boolean().optional().describe('Whether messages need trigger prefix. Default true. Use false for dedicated channels.'),
+    model: z.string().optional().describe('Optional per-agent model override (e.g., "claude-opus-4-6" or "claude-sonnet-4-6")'),
   },
   async (args) => {
     if (!isMain) {
@@ -299,6 +326,10 @@ Use available_groups.json to find the JID for a group. The folder name should be
       name: args.name,
       folder: args.folder,
       trigger: args.trigger,
+      requiresTrigger: args.requires_trigger,
+      containerConfig: args.model
+        ? { model: args.model }
+        : undefined,
       timestamp: new Date().toISOString(),
     };
 

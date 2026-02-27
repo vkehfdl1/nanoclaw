@@ -55,9 +55,89 @@ interface SDKUserMessage {
   session_id: string;
 }
 
+interface ProgrammaticAgentDefinition {
+  description: string;
+  prompt: string;
+  tools?: string[];
+  model?: 'sonnet' | 'opus' | 'haiku' | 'inherit';
+}
+
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+const SUBAGENT_CONFIG_PATHS = [
+  '/workspace/group/.nanoclaw/subagents.json',
+  '/workspace/group/.claude/subagents.json',
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Load programmatic subagent definitions from group workspace files.
+ * Supported formats:
+ * 1) { "agents": { "researcher": { ... } } }
+ * 2) { "researcher": { ... }, "reviewer": { ... } }
+ */
+function loadProgrammaticAgents(): Record<string, ProgrammaticAgentDefinition> | undefined {
+  const mergedAgents: Record<string, ProgrammaticAgentDefinition> = {};
+  const allowedModels = new Set(['sonnet', 'opus', 'haiku', 'inherit']);
+
+  for (const configPath of SUBAGENT_CONFIG_PATHS) {
+    if (!fs.existsSync(configPath)) continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      log(`Failed to parse subagent config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    if (!isRecord(parsed)) {
+      log(`Subagent config at ${configPath} must be a JSON object`);
+      continue;
+    }
+
+    const rawAgents = isRecord(parsed.agents) ? parsed.agents : parsed;
+
+    for (const [name, rawDef] of Object.entries(rawAgents)) {
+      if (!isRecord(rawDef)) continue;
+
+      const description = typeof rawDef.description === 'string'
+        ? rawDef.description.trim()
+        : '';
+      const prompt = typeof rawDef.prompt === 'string'
+        ? rawDef.prompt.trim()
+        : '';
+      if (!description || !prompt) continue;
+
+      const nextDef: ProgrammaticAgentDefinition = {
+        description,
+        prompt,
+      };
+
+      if (Array.isArray(rawDef.tools) && rawDef.tools.every((tool) => typeof tool === 'string')) {
+        nextDef.tools = rawDef.tools;
+      }
+
+      if (typeof rawDef.model === 'string' && allowedModels.has(rawDef.model)) {
+        nextDef.model = rawDef.model as ProgrammaticAgentDefinition['model'];
+      }
+
+      mergedAgents[name] = nextDef;
+    }
+  }
+
+  const count = Object.keys(mergedAgents).length;
+  if (count > 0) {
+    log(`Loaded ${count} programmatic subagent definition(s)`);
+    return mergedAgents;
+  }
+
+  return undefined;
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -441,48 +521,53 @@ async function runQuery(
   }
 
   const model = process.env.CLAUDE_MODEL || undefined;
+  const programmaticAgents = loadProgrammaticAgents();
+  const queryOptions: Record<string, unknown> = {
+    model,
+    cwd: '/workspace/group',
+    additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
+    resume: sessionId,
+    resumeSessionAt: resumeAt,
+    systemPrompt: globalClaudeMd
+      ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+      : undefined,
+    allowedTools: [
+      'Bash',
+      'Read', 'Write', 'Edit', 'Glob', 'Grep',
+      'WebSearch', 'WebFetch',
+      'Task', 'TaskOutput', 'TaskStop',
+      'TeamCreate', 'TeamDelete', 'SendMessage',
+      'TodoWrite', 'ToolSearch', 'Skill',
+      'NotebookEdit',
+      'mcp__nanoclaw__*'
+    ],
+    env: sdkEnv,
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+    settingSources: ['project', 'user'],
+    mcpServers: {
+      nanoclaw: {
+        command: 'node',
+        args: [mcpServerPath],
+        env: {
+          NANOCLAW_CHAT_JID: containerInput.chatJid,
+          NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+          NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+        },
+      },
+    },
+    hooks: {
+      PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+      PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
+    },
+  };
+  if (programmaticAgents) {
+    queryOptions.agents = programmaticAgents;
+  }
 
   for await (const message of query({
     prompt: stream,
-    options: {
-      model,
-      cwd: '/workspace/group',
-      additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
-        : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*'
-      ],
-      env: sdkEnv,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-      },
-      hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
-      },
-    }
+    options: queryOptions as any,
   })) {
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
