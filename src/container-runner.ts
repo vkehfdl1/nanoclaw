@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -122,12 +123,30 @@ function buildVolumeMounts(
     }, null, 2) + '\n');
   }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  // Sync built-in and host-level skills into each group's .claude/skills/
   const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
+  const homeDir = process.env.HOME || os.homedir();
+  const skillSources = [
+    path.join(process.cwd(), 'container', 'skills'),
+    path.join(homeDir, '.agent', 'skills'),
+    path.join(homeDir, '.agents', 'skills'),
+  ];
+  const seenSources = new Set<string>();
+
+  for (const sourcePath of skillSources) {
+    if (!fs.existsSync(sourcePath)) continue;
+
+    let dedupeKey = sourcePath;
+    try {
+      dedupeKey = fs.realpathSync(sourcePath);
+    } catch {
+      // Keep unresolved path if realpath fails
+    }
+    if (seenSources.has(dedupeKey)) continue;
+    seenSources.add(dedupeKey);
+
+    for (const skillDir of fs.readdirSync(sourcePath)) {
+      const srcDir = path.join(sourcePath, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
       const dstDir = path.join(skillsDst, skillDir);
       fs.cpSync(srcDir, dstDir, { recursive: true });
