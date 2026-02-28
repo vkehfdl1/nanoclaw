@@ -31,6 +31,21 @@ claude
 
 Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup, service configuration.
 
+## This Fork: Changes from Upstream
+
+Compared to the upstream NanoClaw baseline, this repository currently includes:
+
+- **Asia/Seoul timezone in containers** (`TZ=Asia/Seoul`) for consistent local-time parsing/rendering.
+- **JDK 17 in the container image** (`openjdk-17-jdk`, `JAVA_HOME`) for Java tooling and Maven-based workflows (e.g., `hwplib`).
+- **Session reset command**: chat-level `/clear` support that clears only Claude session state while preserving group/task configuration.
+- **MCP session reset tool**: `clear_session` tool in the `nanoclaw` MCP server, with main-group authorization to target other registered groups.
+- **Programmatic sub-agent definitions** from JSON files:
+  - `/workspace/group/.nanoclaw/subagents.json`
+  - `/workspace/group/.claude/subagents.json`
+- **Per-agent model override** via `containerConfig.model` (for example, main on Opus and another agent on Sonnet).
+- **Extended `register_group` MCP tool** with optional `requires_trigger` and `model` fields, plus Slack JID guidance (`slack:<CHANNEL_ID>`).
+- **Host skills sync improvements**: syncs from both `~/.agent/skills` and `~/.agents/skills`, and now skips broken/unreadable skill entries instead of failing container startup.
+
 ## Philosophy
 
 **Small enough to understand.** One process, a few source files. No microservices, no message queues, no abstraction layers. Have Claude Code walk you through it.
