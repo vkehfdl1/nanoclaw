@@ -11,6 +11,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'SLACK_BOT_TOKEN',
   'SLACK_APP_TOKEN',
+  'NANOCLAW_REPOS_DIR',
 ]);
 
 export const ASSISTANT_NAME =
@@ -27,6 +28,16 @@ export const SCHEDULER_POLL_INTERVAL = 60000;
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
+const REPOS_BASE_DIR =
+  process.env.NANOCLAW_REPOS_DIR ||
+  envConfig.NANOCLAW_REPOS_DIR ||
+  '~/.nanoclaw/repos';
+
+function expandHomePath(value: string): string {
+  if (value === '~') return HOME_DIR;
+  if (value.startsWith('~/')) return path.join(HOME_DIR, value.slice(2));
+  return value;
+}
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
 export const MOUNT_ALLOWLIST_PATH = path.join(
@@ -38,6 +49,7 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const HOST_REPOS_DIR = path.resolve(expandHomePath(REPOS_BASE_DIR));
 export const MAIN_GROUP_FOLDER = 'main';
 
 export const CONTAINER_IMAGE =

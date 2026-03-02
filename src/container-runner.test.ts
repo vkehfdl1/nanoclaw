@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import { spawn } from 'child_process';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -84,6 +85,7 @@ vi.mock('child_process', async () => {
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import { validateAdditionalMounts } from './mount-security.js';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -199,5 +201,54 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('adds tmpfs overlays for additional mount excludePatterns', async () => {
+    vi.mocked(validateAdditionalMounts).mockReturnValueOnce([
+      {
+        hostPath: '/host/repos/autorag-research',
+        containerPath: '/workspace/extra/autorag-research',
+        readonly: true,
+        excludePatterns: ['node_modules', '.venv', '.git/objects', '../bad'],
+      },
+    ]);
+
+    const groupWithMounts: RegisteredGroup = {
+      ...testGroup,
+      containerConfig: {
+        additionalMounts: [{ hostPath: '/ignored/by/mock' }],
+      },
+    };
+
+    const resultPromise = runContainerAgent(
+      groupWithMounts,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-tmpfs',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    const tmpfsPaths: string[] = [];
+    for (let i = 0; i < spawnArgs.length; i += 1) {
+      if (spawnArgs[i] === '--tmpfs') {
+        tmpfsPaths.push(spawnArgs[i + 1]);
+      }
+    }
+
+    expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/node_modules');
+    expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.venv');
+    expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.git/objects');
+    expect(tmpfsPaths.some((p) => p.includes('../bad'))).toBe(false);
   });
 });

@@ -13,3 +13,11 @@
 
 ## US-003 — FAIL attempt 1 (2026-03-02T03:11:13Z)
 
+## US-003 — PASS (2026-03-02T03:19:06Z)
+- Title: Cross-agent messaging via IPC + Slack
+- Attempts: 2
+
+## US-004 — PASS (2026-03-02T03:27:20Z)
+- Title: Channel member injection into agent prompts
+- Attempts: 1
+

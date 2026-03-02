@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 import {
   _initTestDatabase,
@@ -12,7 +14,13 @@ import {
   setSession,
   setRegisteredGroup,
 } from './db.js';
-import { _resetPingPongCounts, processTaskIpc, IpcDeps } from './ipc.js';
+import {
+  _resetPingPongCounts,
+  _setHostCommandRunnerForTest,
+  processTaskIpc,
+  IpcDeps,
+} from './ipc.js';
+import { DATA_DIR, HOST_REPOS_DIR } from './config.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -44,6 +52,7 @@ let sentMessages: Array<{ jid: string; text: string }>;
 beforeEach(() => {
   _initTestDatabase();
   _resetPingPongCounts();
+  _setHostCommandRunnerForTest();
   sentMessages = [];
 
   groups = {
@@ -75,6 +84,15 @@ beforeEach(() => {
       deleteSession(groupFolder);
     },
   };
+
+  fs.rmSync(path.join(DATA_DIR, 'ipc', 'other-group', 'responses'), {
+    recursive: true,
+    force: true,
+  });
+  fs.rmSync(path.join(HOST_REPOS_DIR, 'autorag-research'), {
+    recursive: true,
+    force: true,
+  });
 });
 
 // --- schedule_task authorization ---
@@ -804,5 +822,140 @@ describe('send_agent_message', () => {
 
     expect(sentMessages).toHaveLength(6);
     expect(sentMessages[5].text).toContain('thread-b first message');
+  });
+});
+
+// --- host repo task authorization and execution ---
+
+describe('host repo IPC tasks', () => {
+  function configureAllowedRepo(repo: string): string {
+    const updated = {
+      ...groups['other@g.us'],
+      containerConfig: {
+        envVars: {
+          ALLOWED_REPOS: repo,
+        },
+      },
+    };
+    groups['other@g.us'] = updated;
+    setRegisteredGroup('other@g.us', updated);
+
+    const repoPath = path.join(HOST_REPOS_DIR, repo);
+    fs.mkdirSync(repoPath, { recursive: true });
+    return repoPath;
+  }
+
+  function readTaskResponse(requestId: string): any {
+    const responsePath = path.join(
+      DATA_DIR,
+      'ipc',
+      'other-group',
+      'responses',
+      `${requestId}.json`,
+    );
+    expect(fs.existsSync(responsePath)).toBe(true);
+    return JSON.parse(fs.readFileSync(responsePath, 'utf-8'));
+  }
+
+  it('rejects unauthorized repo access and writes error response', async () => {
+    const runner = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'git_checkout',
+        requestId: 'req-unauthorized',
+        repo: 'private-repo',
+        branch: 'main',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).not.toHaveBeenCalled();
+    const response = readTaskResponse('req-unauthorized');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('not allowed');
+  });
+
+  it('runs codex_exec in allowed repo and writes stdout response', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (command: string, args: string[]) => {
+      if (command === 'git') return { stdout: '', stderr: '' };
+      if (command === 'codex') return { stdout: 'codex complete', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'codex_exec',
+        requestId: 'req-codex',
+        repo: 'autorag-research',
+        prompt: 'Implement feature X',
+        branch: 'feat/us-005',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenNthCalledWith(
+      1,
+      'git',
+      ['checkout', 'feat/us-005'],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+    expect(runner).toHaveBeenNthCalledWith(
+      2,
+      'codex',
+      expect.arrayContaining(['exec', '--full-auto', '--sandbox', 'danger-full-access', '--cd', repoPath]),
+      expect.any(Object),
+    );
+
+    const response = readTaskResponse('req-codex');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toBe('codex complete');
+  });
+
+  it('git_pull defaults to current branch when none is provided', async () => {
+    configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'rev-parse') return { stdout: 'main\n', stderr: '' };
+      if (args[0] === 'pull') return { stdout: 'Already up to date.', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'git_pull',
+        requestId: 'req-pull',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenNthCalledWith(
+      1,
+      'git',
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      expect.any(Object),
+    );
+    expect(runner).toHaveBeenNthCalledWith(
+      2,
+      'git',
+      ['pull', 'origin', 'main'],
+      expect.any(Object),
+    );
+
+    const response = readTaskResponse('req-pull');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('Already up to date.');
   });
 });

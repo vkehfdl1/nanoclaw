@@ -15,6 +15,10 @@ import { writeInsight, InsightTypeSchema, PrioritySchema } from './secondbrain.j
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
+const IPC_RESPONSE_POLL_MS = 500;
+const CODEX_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
+const HOST_OP_RESPONSE_TIMEOUT_MS = 30 * 1000;
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
@@ -34,6 +38,74 @@ function writeIpcFile(dir: string, data: object): string {
   fs.renameSync(tempPath, filepath);
 
   return filename;
+}
+
+interface IpcTaskResponse {
+  requestId: string;
+  ok: boolean;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  exitCode?: number | null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createRequestId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function waitForTaskResponse(
+  requestId: string,
+  timeoutMs: number,
+): Promise<IpcTaskResponse> {
+  const responsePath = path.join(RESPONSES_DIR, `${requestId}.json`);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (fs.existsSync(responsePath)) {
+      const payload = JSON.parse(
+        fs.readFileSync(responsePath, 'utf-8'),
+      ) as IpcTaskResponse;
+      fs.unlinkSync(responsePath);
+      return payload;
+    }
+    await sleep(IPC_RESPONSE_POLL_MS);
+  }
+
+  throw new Error(`Timed out waiting for IPC response (${requestId})`);
+}
+
+async function runTaskWithResponse(
+  data: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<IpcTaskResponse> {
+  const requestId = createRequestId(String(data.type || 'req'));
+  writeIpcFile(TASKS_DIR, {
+    ...data,
+    requestId,
+    sourceAgent: groupFolder,
+    timestamp: new Date().toISOString(),
+  });
+  return waitForTaskResponse(requestId, timeoutMs);
+}
+
+function formatTaskResult(response: IpcTaskResponse, successFallback: string): {
+  text: string;
+  isError: boolean;
+} {
+  if (!response.ok) {
+    const details = response.stderr?.trim() || response.stdout?.trim();
+    const text = details
+      ? `${response.error || 'Host command failed'}\n\n${details}`
+      : response.error || 'Host command failed';
+    return { text, isError: true };
+  }
+
+  const output = response.stdout?.trim() || response.stderr?.trim() || successFallback;
+  return { text: output, isError: false };
 }
 
 const server = new McpServer({
@@ -327,6 +399,233 @@ server.tool(
     writeIpcFile(TASKS_DIR, data);
 
     return { content: [{ type: 'text' as const, text: `Task ${args.task_id} cancellation requested.` }] };
+  },
+);
+
+server.tool(
+  'codex_exec',
+  'Run codex on a host-side repository clone. Access is restricted by ALLOWED_REPOS.',
+  {
+    repo: z.string().describe('Allowed repository name, e.g. "autorag-research"'),
+    prompt: z.string().describe('Prompt passed to codex exec'),
+    branch: z.string().optional().describe('Optional branch to checkout before running codex'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'codex_exec',
+          repo: args.repo,
+          prompt: args.prompt,
+          branch: args.branch,
+        },
+        CODEX_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, 'codex exec completed.');
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `codex_exec failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'git_create_branch',
+  'Create and checkout a new branch on a host-side repository clone.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    branch: z.string().describe('Branch name to create'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'git_create_branch',
+          repo: args.repo,
+          branch: args.branch,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, `Created branch ${args.branch}.`);
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `git_create_branch failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'git_checkout',
+  'Checkout an existing branch on a host-side repository clone.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    branch: z.string().describe('Branch name to checkout'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'git_checkout',
+          repo: args.repo,
+          branch: args.branch,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, `Checked out branch ${args.branch}.`);
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `git_checkout failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'git_pull',
+  'Pull latest upstream changes from origin on a host-side repository clone.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    branch: z.string().optional().describe('Optional branch to pull (defaults to current branch)'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'git_pull',
+          repo: args.repo,
+          branch: args.branch,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, 'git pull completed.');
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `git_pull failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'gh_create_pr',
+  'Create a pull request with the GitHub CLI on the host.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    title: z.string().describe('PR title'),
+    body: z.string().describe('PR body (supports markdown)'),
+    base: z.string().describe('Base branch'),
+    head: z.string().describe('Head branch'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'gh_create_pr',
+          repo: args.repo,
+          title: args.title,
+          body: args.body,
+          base: args.base,
+          head: args.head,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, 'Pull request created.');
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `gh_create_pr failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'gh_issue_list',
+  'List GitHub issues from a host-side repository clone.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    state: z.enum(['open', 'closed', 'all']).optional().describe('Issue state filter'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'gh_issue_list',
+          repo: args.repo,
+          state: args.state,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, 'No issues found.');
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `gh_issue_list failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'gh_issue_comment',
+  'Post a GitHub issue comment using the host gh CLI.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    issue_number: z.number().int().positive().describe('Issue number'),
+    body: z.string().describe('Comment body'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'gh_issue_comment',
+          repo: args.repo,
+          issue_number: args.issue_number,
+          body: args.body,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, `Comment posted to issue #${args.issue_number}.`);
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `gh_issue_comment failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
   },
 );
 

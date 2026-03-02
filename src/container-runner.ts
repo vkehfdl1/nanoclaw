@@ -50,6 +50,35 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+  excludePatterns?: string[];
+}
+
+function normalizeExcludePattern(pattern: string): string | null {
+  const trimmed = pattern.trim().replace(/^\/+/, '');
+  if (!trimmed) return null;
+
+  const normalized = path.posix.normalize(trimmed);
+  if (
+    normalized === '.' ||
+    normalized.startsWith('../') ||
+    normalized.includes('/../')
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function getTmpfsOverlayPaths(mount: VolumeMount): string[] {
+  if (!mount.excludePatterns || mount.excludePatterns.length === 0) return [];
+
+  const overlays = new Set<string>();
+  for (const rawPattern of mount.excludePatterns) {
+    const pattern = normalizeExcludePattern(rawPattern);
+    if (!pattern) continue;
+    overlays.add(path.posix.join(mount.containerPath, pattern));
+  }
+  return [...overlays];
 }
 
 function buildVolumeMounts(
@@ -182,6 +211,7 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'responses'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -267,6 +297,12 @@ function buildContainerArgs(
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
     } else {
       args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+    }
+  }
+
+  for (const mount of mounts) {
+    for (const overlayPath of getTmpfsOverlayPaths(mount)) {
+      args.push('--tmpfs', overlayPath);
     }
   }
 

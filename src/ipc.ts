@@ -1,10 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
 
 import { CronExpressionParser } from 'cron-parser';
 
 import {
   DATA_DIR,
+  HOST_REPOS_DIR,
   IPC_POLL_INTERVAL,
   MAX_PING_PONG_TURNS,
   MAIN_GROUP_FOLDER,
@@ -44,6 +46,75 @@ export interface IpcDeps {
 
 let ipcWatcherRunning = false;
 const pingPongCounts = new Map<string, number>();
+const CODEX_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
+const HOST_OP_TIMEOUT_MS = 30 * 1000;
+const HOST_CMD_MAX_BUFFER = 10 * 1024 * 1024;
+const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+const VALID_ISSUE_STATES = new Set(['open', 'closed', 'all']);
+
+interface HostCommandResult {
+  stdout: string;
+  stderr: string;
+}
+
+interface HostCommandError extends Error {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | null;
+}
+
+interface IpcTaskResponse {
+  requestId: string;
+  ok: boolean;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  exitCode?: number | null;
+}
+
+type HostCommandRunner = (
+  command: string,
+  args: string[],
+  options: {
+    cwd?: string;
+    timeoutMs: number;
+  },
+) => Promise<HostCommandResult>;
+
+const defaultHostCommandRunner: HostCommandRunner = (
+  command,
+  args,
+  options,
+) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        cwd: options.cwd,
+        timeout: options.timeoutMs,
+        maxBuffer: HOST_CMD_MAX_BUFFER,
+      },
+      (error, stdout, stderr) => {
+        if (!error) {
+          resolve({ stdout, stderr });
+          return;
+        }
+
+        const hostError = new Error(
+          stderr?.trim() || error.message || `Command failed: ${command}`,
+        ) as HostCommandError;
+        hostError.stdout = stdout;
+        hostError.stderr = stderr;
+        const rawCode = (error as NodeJS.ErrnoException).code;
+        hostError.exitCode = typeof rawCode === 'number' ? rawCode : null;
+        reject(hostError);
+      },
+    );
+  });
+
+let hostCommandRunner: HostCommandRunner = defaultHostCommandRunner;
 
 function normalizeAgentFolder(value: string): string {
   return value.trim().replace(/^@+/, '');
@@ -66,6 +137,163 @@ function resolveAgentMention(
 /** @internal - for tests only */
 export function _resetPingPongCounts(): void {
   pingPongCounts.clear();
+}
+
+/** @internal - for tests only */
+export function _setHostCommandRunnerForTest(
+  runner?: HostCommandRunner,
+): void {
+  hostCommandRunner = runner ?? defaultHostCommandRunner;
+}
+
+function normalizeRepoName(value: string): string | null {
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return null;
+
+  const segments = trimmed.split('/');
+  if (
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === '.' ||
+        segment === '..' ||
+        !REPO_SEGMENT_PATTERN.test(segment),
+    )
+  ) {
+    return null;
+  }
+
+  return segments.join('/');
+}
+
+function getAllowedRepos(sourceGroup: string, groups: Record<string, RegisteredGroup>): Set<string> {
+  const allowed = new Set<string>();
+
+  for (const group of Object.values(groups)) {
+    if (group.folder !== sourceGroup) continue;
+    const raw = group.containerConfig?.envVars?.ALLOWED_REPOS;
+    if (!raw) continue;
+    for (const repo of raw.split(',')) {
+      const normalized = normalizeRepoName(repo);
+      if (normalized) allowed.add(normalized);
+    }
+  }
+
+  return allowed;
+}
+
+function resolveRepoPath(repo: string): string {
+  const repoPath = path.resolve(HOST_REPOS_DIR, repo);
+  const relative = path.relative(HOST_REPOS_DIR, repoPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Repo path escapes host repo base directory');
+  }
+  return repoPath;
+}
+
+function authorizeRepoAccess(
+  sourceGroup: string,
+  repoRaw: string | undefined,
+  groups: Record<string, RegisteredGroup>,
+): { ok: true; repo: string; repoPath: string } | { ok: false; error: string } {
+  if (!repoRaw) {
+    return { ok: false, error: 'Missing required field: repo' };
+  }
+
+  const repo = normalizeRepoName(repoRaw);
+  if (!repo) {
+    return { ok: false, error: `Invalid repo name: "${repoRaw}"` };
+  }
+
+  const allowedRepos = getAllowedRepos(sourceGroup, groups);
+  if (!allowedRepos.has(repo)) {
+    return {
+      ok: false,
+      error: `Repo "${repo}" is not allowed for agent "${sourceGroup}"`,
+    };
+  }
+
+  let repoPath: string;
+  try {
+    repoPath = resolveRepoPath(repo);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  if (!fs.existsSync(repoPath)) {
+    return { ok: false, error: `Repo path not found: ${repoPath}` };
+  }
+
+  try {
+    if (!fs.statSync(repoPath).isDirectory()) {
+      return { ok: false, error: `Repo path is not a directory: ${repoPath}` };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Failed to access repo path: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  return { ok: true, repo, repoPath };
+}
+
+function writeTaskResponse(
+  sourceGroup: string,
+  requestId: string,
+  response: Omit<IpcTaskResponse, 'requestId'>,
+): void {
+  if (!REQUEST_ID_PATTERN.test(requestId)) {
+    logger.warn(
+      { sourceGroup, requestId },
+      'Invalid IPC requestId in response write',
+    );
+    return;
+  }
+
+  const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+  fs.mkdirSync(responsesDir, { recursive: true });
+  const responsePath = path.join(responsesDir, `${requestId}.json`);
+  const tempPath = `${responsePath}.tmp`;
+  const payload: IpcTaskResponse = { requestId, ...response };
+  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2));
+  fs.renameSync(tempPath, responsePath);
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function getHostCommandErrorDetails(
+  err: unknown,
+): { error: string; stdout?: string; stderr?: string; exitCode?: number | null } {
+  const details: { error: string; stdout?: string; stderr?: string; exitCode?: number | null } = {
+    error: getErrorMessage(err),
+  };
+  if (err && typeof err === 'object') {
+    const maybe = err as HostCommandError;
+    if (typeof maybe.stdout === 'string') details.stdout = maybe.stdout;
+    if (typeof maybe.stderr === 'string') details.stderr = maybe.stderr;
+    if (
+      maybe.exitCode === null ||
+      typeof maybe.exitCode === 'number'
+    ) {
+      details.exitCode = maybe.exitCode;
+    }
+  }
+  return details;
+}
+
+async function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd?: string; timeoutMs: number },
+): Promise<HostCommandResult> {
+  return hostCommandRunner(command, args, options);
 }
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -213,7 +441,18 @@ export async function processTaskIpc(
   data: {
     type: string;
     taskId?: string;
+    requestId?: string;
+    request_id?: string;
     prompt?: string;
+    repo?: string;
+    branch?: string;
+    title?: string;
+    body?: string;
+    base?: string;
+    head?: string;
+    state?: string;
+    issue_number?: number;
+    issueNumber?: number;
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
@@ -239,6 +478,7 @@ export async function processTaskIpc(
   deps: IpcDeps,
 ): Promise<void> {
   const registeredGroups = deps.registeredGroups();
+  const requestId = data.requestId ?? data.request_id;
 
   switch (data.type) {
     case 'schedule_task':
@@ -586,6 +826,335 @@ export async function processTaskIpc(
         },
         'Cross-agent IPC message sent',
       );
+      break;
+    }
+
+    case 'codex_exec': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized codex_exec request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const prompt = data.prompt?.trim();
+      if (!prompt) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required field: prompt',
+        });
+        break;
+      }
+
+      try {
+        const branch = data.branch?.trim();
+        if (branch) {
+          await runCommand('git', ['checkout', branch], {
+            cwd: auth.repoPath,
+            timeoutMs: HOST_OP_TIMEOUT_MS,
+          });
+        }
+
+        const result = await runCommand(
+          'codex',
+          [
+            'exec',
+            '--full-auto',
+            '--sandbox',
+            'danger-full-access',
+            '--cd',
+            auth.repoPath,
+            prompt,
+          ],
+          { timeoutMs: CODEX_EXEC_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          ...details,
+        });
+      }
+      break;
+    }
+
+    case 'git_create_branch': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized git_create_branch request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+      const branch = data.branch?.trim();
+      if (!branch) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required field: branch',
+        });
+        break;
+      }
+      try {
+        const result = await runCommand(
+          'git',
+          ['checkout', '-b', branch],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'git_checkout': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized git_checkout request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+      const branch = data.branch?.trim();
+      if (!branch) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required field: branch',
+        });
+        break;
+      }
+      try {
+        const result = await runCommand(
+          'git',
+          ['checkout', branch],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'git_pull': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized git_pull request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+      try {
+        let branch = data.branch?.trim();
+        if (!branch) {
+          const current = await runCommand(
+            'git',
+            ['rev-parse', '--abbrev-ref', 'HEAD'],
+            { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+          );
+          branch = current.stdout.trim();
+        }
+        if (!branch) {
+          writeTaskResponse(sourceGroup, requestId, {
+            ok: false,
+            error: 'Unable to determine current branch for git_pull',
+          });
+          break;
+        }
+        const result = await runCommand(
+          'git',
+          ['pull', 'origin', branch],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'gh_create_pr': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized gh_create_pr request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const title = data.title?.trim();
+      const body = data.body;
+      const base = data.base?.trim();
+      const head = data.head?.trim();
+      if (!title || !body || !base || !head) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required fields: title, body, base, head',
+        });
+        break;
+      }
+
+      try {
+        const result = await runCommand(
+          'gh',
+          ['pr', 'create', '--title', title, '--body', body, '--base', base, '--head', head],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'gh_issue_list': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized gh_issue_list request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const state = data.state?.trim() || 'open';
+      if (!VALID_ISSUE_STATES.has(state)) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: `Invalid issue state: "${state}"`,
+        });
+        break;
+      }
+
+      try {
+        const result = await runCommand(
+          'gh',
+          [
+            'issue',
+            'list',
+            '--state',
+            state,
+            '--json',
+            'number,title,body,state,labels,url',
+          ],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'gh_issue_comment': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized gh_issue_comment request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const issueNumber =
+        data.issue_number ??
+        data.issueNumber;
+      const body = data.body;
+      if (!issueNumber || !Number.isInteger(issueNumber) || issueNumber <= 0 || !body?.trim()) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required fields: issue_number (positive integer), body',
+        });
+        break;
+      }
+
+      try {
+        const result = await runCommand(
+          'gh',
+          ['issue', 'comment', String(issueNumber), '--body', body],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
       break;
     }
 
