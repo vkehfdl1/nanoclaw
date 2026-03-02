@@ -75,6 +75,20 @@ The agent will be registered on next startup and begin responding in its channel
 
 ## Optional Configuration
 
+### Model selection
+
+Set the Claude model per agent via `containerConfig.model`:
+
+```typescript
+containerConfig: {
+  model: 'claude-opus-4-6',    // or 'claude-sonnet-4-6'
+},
+```
+
+Current defaults:
+- **Dobby (main) + PM agents**: `claude-opus-4-6` (complex reasoning, code generation)
+- **Marketer + Todomon**: `claude-sonnet-4-6` (content creation, task management)
+
 ### Container environment variables
 
 Pass env vars to the agent's container via `containerConfig`:
@@ -83,6 +97,7 @@ Pass env vars to the agent's container via `containerConfig`:
 ensureDefaultRegisteredGroup(JID, {
   // ... base fields ...
   containerConfig: {
+    model: 'claude-sonnet-4-6',
     envVars: {
       GITHUB_REPO: 'owner/repo-name',
       ALLOWED_REPOS: 'repo-name',
@@ -175,19 +190,36 @@ ensureDefaultRegisteredGroup('slack:C09SHARED', {
 
 ### Browser session persistence (for SNS agents)
 
-After authenticating to a platform via `agent-browser`:
+Agents cannot log into platforms themselves — the **user** must provide authenticated sessions.
+
+To set up a session, run a one-time interactive container session:
 
 ```bash
-agent-browser state save /workspace/group/auth/platform.json
+# Start an interactive agent-browser session
+docker run -it --rm -v ~/.nanoclaw/auth:/auth nanoclaw-agent:latest bash
+
+# Inside the container:
+agent-browser open https://x.com/login
+agent-browser snapshot -i
+# Manually fill in credentials...
+agent-browser state save /auth/x.json
 ```
 
-On next session:
+Then mount the auth directory for the agent:
 
-```bash
-agent-browser state load /workspace/group/auth/platform.json
+```typescript
+containerConfig: {
+  additionalMounts: [{
+    hostPath: '~/.nanoclaw/auth',
+    containerPath: 'auth',  // appears at /workspace/extra/auth/
+    readonly: true,
+  }],
+},
 ```
 
-Store this in the agent's CLAUDE.md so it remembers to load sessions.
+The agent loads sessions on startup: `agent-browser state load /workspace/extra/auth/x.json`
+
+If a session expires, the agent will ask the user (via Dobby) to re-authenticate.
 
 ## Agent Checklist
 

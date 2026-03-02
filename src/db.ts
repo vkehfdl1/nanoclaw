@@ -9,12 +9,14 @@ import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.
 
 let db: Database.Database;
 
+const MAIN_CHANNEL_JID = 'slack:C0AH91957U0';
+const MAIN_FOLDER = 'main';
 const PM_AUTORAG_CHANNEL_JID = 'slack:C09RELR4R9N';
 const PM_AUTORAG_FOLDER = 'pm-autorag';
 const MARKETER_FOLDER = 'marketer';
 const MARKETER_DEDICATED_CHANNEL_JID = 'slack:C09MARKETER';
 const MARKETER_SHARED_CHANNEL_JID = 'slack:C09DBMARKET';
-const TODOMON_CHANNEL_JID = 'slack:C09TODOMON'; // TODO: replace with actual channel JID
+const TODOMON_CHANNEL_JID = 'slack:C0AH3SVQL4C';
 const TODOMON_FOLDER = 'todomon';
 
 function ensureDefaultRegisteredGroup(
@@ -35,6 +37,19 @@ function ensureDefaultRegisteredGroup(
   });
 }
 
+function ensureMainRegistration(): void {
+  ensureDefaultRegisteredGroup(MAIN_CHANNEL_JID, {
+    name: ASSISTANT_NAME,
+    folder: MAIN_FOLDER,
+    trigger: `@${ASSISTANT_NAME}`,
+    requiresTrigger: false,
+    role: 'main',
+    containerConfig: {
+      model: 'claude-opus-4-6',
+    },
+  });
+}
+
 function ensurePmAutoragRegistration(): void {
   ensureDefaultRegisteredGroup(PM_AUTORAG_CHANNEL_JID, {
     name: 'Young-gu',
@@ -43,6 +58,7 @@ function ensurePmAutoragRegistration(): void {
     requiresTrigger: false,
     role: 'pm-agent',
     containerConfig: {
+      model: 'claude-opus-4-6',
       envVars: {
         GITHUB_REPO: 'owner/autorag-research',
         ALLOWED_REPOS: 'autorag-research',
@@ -74,6 +90,9 @@ function ensureMarketerRegistration(): void {
     trigger: '@marketer',
     requiresTrigger: false,
     role: 'marketer',
+    containerConfig: {
+      model: 'claude-sonnet-4-6',
+    },
   });
 
   ensureDefaultRegisteredGroup(MARKETER_SHARED_CHANNEL_JID, {
@@ -82,6 +101,9 @@ function ensureMarketerRegistration(): void {
     trigger: '@marketer',
     requiresTrigger: true,
     role: 'marketer',
+    containerConfig: {
+      model: 'claude-sonnet-4-6',
+    },
   });
 }
 
@@ -92,10 +114,14 @@ function ensureTodomonRegistration(): void {
     trigger: '@todomon',
     requiresTrigger: false,
     role: 'todomon',
+    containerConfig: {
+      model: 'claude-sonnet-4-6',
+    },
   });
 }
 
 function ensureDefaultAgentRegistrations(): void {
+  ensureMainRegistration();
   ensurePmAutoragRegistration();
   ensureMarketerRegistration();
   ensureTodomonRegistration();

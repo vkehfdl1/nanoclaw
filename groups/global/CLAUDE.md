@@ -24,7 +24,7 @@ Use `conversations/` for session recall. Split files > 500 lines. Keep a lightwe
 
 Use Actionbook (`actionbook`) for efficient browser operations — pre-computed action manuals reduce token usage and improve reliability. Pre-installed in all containers. Reference: https://github.com/actionbook/actionbook
 
-For login-required sites, use `agent-browser state save <file>` after authenticating and `agent-browser state load <file>` to restore sessions.
+For login-required sites, load user-provisioned sessions with `agent-browser state load <file>`. If no session file exists or it has expired, ask the user (via Dobby) to re-authenticate — NEVER attempt to log in with credentials yourself.
 
 ## Sub-agents
 
