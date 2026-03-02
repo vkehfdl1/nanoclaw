@@ -136,7 +136,7 @@
         "REQ-040: Review format includes: summary, list of issues (severity: critical/warning/info), and an overall assessment."
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

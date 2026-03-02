@@ -39,3 +39,6 @@
 ## US-008 — PASS (2026-03-02T04:01:41Z)
 - Title: PM Codex integration for implementation
 - Attempts: 1
+## US-009 — PASS (2026-03-02T04:11:20Z)
+- Title: PM PR review via subagent
+- Attempts: 1

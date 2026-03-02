@@ -1095,4 +1095,76 @@ describe('host repo IPC tasks', () => {
     expect(response.ok).toBe(true);
     expect(response.stdout).toContain('issuecomment');
   });
+
+  it('gh_pr_diff fetches the PR diff for the requested PR number', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'diff') {
+        return { stdout: 'diff --git a/src/a.ts b/src/a.ts\n+new line', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_pr_diff',
+        requestId: 'req-gh-pr-diff',
+        repo: 'autorag-research',
+        pr_number: 42,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'diff', '42'],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-pr-diff');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('diff --git');
+  });
+
+  it('gh_pr_review posts a structured comment review to the PR', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+    const reviewBody =
+      '## Summary\n- Looks mostly good.\n\n## Issues\n- warning: missing null guard.\n\n## Overall Assessment\nRequest updates.';
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'review') {
+        return { stdout: 'review submitted', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_pr_review',
+        requestId: 'req-gh-pr-review',
+        repo: 'autorag-research',
+        pr_number: 42,
+        body: reviewBody,
+        review_event: 'comment',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'review', '42', '--comment', '--body', reviewBody],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-pr-review');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('review submitted');
+  });
 });

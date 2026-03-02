@@ -52,6 +52,11 @@ const HOST_CMD_MAX_BUFFER = 10 * 1024 * 1024;
 const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const VALID_ISSUE_STATES = new Set(['open', 'closed', 'all']);
+const VALID_PR_REVIEW_EVENTS = new Set([
+  'comment',
+  'approve',
+  'request-changes',
+]);
 
 interface HostCommandResult {
   stdout: string;
@@ -515,6 +520,10 @@ export async function processTaskIpc(
     state?: string;
     issue_number?: number;
     issueNumber?: number;
+    pr_number?: number;
+    prNumber?: number;
+    review_event?: string;
+    reviewEvent?: string;
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
@@ -1216,6 +1225,110 @@ export async function processTaskIpc(
         const result = await runCommand(
           'gh',
           ['issue', 'comment', String(issueNumber), '--body', body],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'gh_pr_diff': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized gh_pr_diff request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const prNumber =
+        data.pr_number ??
+        data.prNumber;
+      if (!prNumber || !Number.isInteger(prNumber) || prNumber <= 0) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required field: pr_number (positive integer)',
+        });
+        break;
+      }
+
+      try {
+        const result = await runCommand(
+          'gh',
+          ['pr', 'diff', String(prNumber)],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: true,
+          stdout: result.stdout,
+          stderr: result.stderr || undefined,
+        });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'gh_pr_review': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized gh_pr_review request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const prNumber =
+        data.pr_number ??
+        data.prNumber;
+      const body = data.body;
+      if (!prNumber || !Number.isInteger(prNumber) || prNumber <= 0 || !body?.trim()) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required fields: pr_number (positive integer), body',
+        });
+        break;
+      }
+
+      const reviewEventRaw = (data.review_event ?? data.reviewEvent ?? 'comment')
+        .trim()
+        .toLowerCase();
+      if (!VALID_PR_REVIEW_EVENTS.has(reviewEventRaw)) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: `Invalid review_event: "${reviewEventRaw}"`,
+        });
+        break;
+      }
+
+      const reviewFlag = reviewEventRaw === 'request-changes'
+        ? '--request-changes'
+        : `--${reviewEventRaw}`;
+
+      try {
+        const result = await runCommand(
+          'gh',
+          ['pr', 'review', String(prNumber), reviewFlag, '--body', body],
           { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
         );
         writeTaskResponse(sourceGroup, requestId, {

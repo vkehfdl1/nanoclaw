@@ -566,6 +566,73 @@ server.tool(
 );
 
 server.tool(
+  'gh_pr_diff',
+  'Read a pull request diff using the host gh CLI.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    pr_number: z.number().int().positive().describe('Pull request number'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'gh_pr_diff',
+          repo: args.repo,
+          pr_number: args.pr_number,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, `Loaded diff for PR #${args.pr_number}.`);
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `gh_pr_diff failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'gh_pr_review',
+  'Submit a pull request review using the host gh CLI.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    pr_number: z.number().int().positive().describe('Pull request number'),
+    body: z.string().describe('Review body (supports markdown)'),
+    review_event: z.enum(['comment', 'approve', 'request-changes']).optional().describe('Review action (default: comment)'),
+  },
+  async (args) => {
+    try {
+      const reviewEvent = args.review_event ?? 'comment';
+      const response = await runTaskWithResponse(
+        {
+          type: 'gh_pr_review',
+          repo: args.repo,
+          pr_number: args.pr_number,
+          body: args.body,
+          review_event: reviewEvent,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(response, `Submitted ${reviewEvent} review for PR #${args.pr_number}.`);
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `gh_pr_review failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
   'gh_issue_list',
   'List GitHub issues from a host-side repository clone.',
   {

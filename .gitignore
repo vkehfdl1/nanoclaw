@@ -36,5 +36,8 @@ groups/pm-autorag/*
 
 # Skills system (local per-installation state)
 .nanoclaw/
+!groups/pm-autorag/.nanoclaw/
+groups/pm-autorag/.nanoclaw/*
+!groups/pm-autorag/.nanoclaw/subagents.json
 
 agents-sdk-docs
