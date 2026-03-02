@@ -24,6 +24,7 @@ interface ContainerInput {
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
+  threadTs?: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
@@ -553,6 +554,9 @@ async function runQuery(
           NANOCLAW_CHAT_JID: containerInput.chatJid,
           NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
           NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+          ...(containerInput.threadTs
+            ? { NANOCLAW_THREAD_TS: containerInput.threadTs }
+            : {}),
         },
       },
     },

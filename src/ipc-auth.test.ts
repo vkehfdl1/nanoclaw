@@ -5,13 +5,14 @@ import {
   createTask,
   deleteSession,
   getAllTasks,
+  getMessagesSince,
   getRegisteredGroup,
   getSession,
   getTaskById,
   setSession,
   setRegisteredGroup,
 } from './db.js';
-import { processTaskIpc, IpcDeps } from './ipc.js';
+import { _resetPingPongCounts, processTaskIpc, IpcDeps } from './ipc.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -38,9 +39,12 @@ const THIRD_GROUP: RegisteredGroup = {
 
 let groups: Record<string, RegisteredGroup>;
 let deps: IpcDeps;
+let sentMessages: Array<{ jid: string; text: string }>;
 
 beforeEach(() => {
   _initTestDatabase();
+  _resetPingPongCounts();
+  sentMessages = [];
 
   groups = {
     'main@g.us': MAIN_GROUP,
@@ -54,7 +58,9 @@ beforeEach(() => {
   setRegisteredGroup('third@g.us', THIRD_GROUP);
 
   deps = {
-    sendMessage: async () => {},
+    sendMessage: async (jid, text) => {
+      sentMessages.push({ jid, text });
+    },
     sendFile: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
@@ -671,5 +677,132 @@ describe('clear_session authorization', () => {
     );
 
     expect(getSession('main')).toBe('session-main');
+  });
+});
+
+// --- send_agent_message ---
+
+describe('send_agent_message', () => {
+  it('routes to target agent channel and stores cross-agent message in DB', async () => {
+    await processTaskIpc(
+      {
+        type: 'send_agent_message',
+        targetAgent: 'third-group',
+        text: 'Please review this PR',
+        sourceChatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].jid).toBe('third@g.us');
+    expect(sentMessages[0].text).toContain('[from @Andy]');
+
+    const stored = getMessagesSince('third@g.us', '', 'Andy');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].content).toContain('[from @Andy]');
+    expect(stored[0].content).toContain('Please review this PR');
+  });
+
+  it('respects explicit channelJid when target agent is registered there', async () => {
+    setRegisteredGroup('third-alt@g.us', {
+      ...THIRD_GROUP,
+      added_at: '2024-01-01T00:00:01.000Z',
+    });
+    groups['third-alt@g.us'] = {
+      ...THIRD_GROUP,
+      added_at: '2024-01-01T00:00:01.000Z',
+    };
+
+    await processTaskIpc(
+      {
+        type: 'send_agent_message',
+        targetAgent: 'third-group',
+        channelJid: 'third-alt@g.us',
+        text: 'Use this channel',
+        sourceChatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].jid).toBe('third-alt@g.us');
+  });
+
+  it('blocks explicit channelJid when target agent is not registered there', async () => {
+    await processTaskIpc(
+      {
+        type: 'send_agent_message',
+        targetAgent: 'third-group',
+        channelJid: 'main@g.us',
+        text: 'This should be blocked',
+        sourceChatJid: 'other@g.us',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(sentMessages).toHaveLength(0);
+    expect(getMessagesSince('main@g.us', '', 'Andy')).toHaveLength(0);
+  });
+
+  it('blocks cross-agent ping-pong after 5 turns per (source,target,thread)', async () => {
+    for (let i = 0; i < 6; i += 1) {
+      await processTaskIpc(
+        {
+          type: 'send_agent_message',
+          targetAgent: 'third-group',
+          text: `turn ${i + 1}`,
+          sourceChatJid: 'other@g.us',
+        },
+        'other-group',
+        false,
+        deps,
+      );
+    }
+
+    expect(sentMessages).toHaveLength(5);
+
+    const stored = getMessagesSince('third@g.us', '', 'Andy');
+    expect(stored).toHaveLength(5);
+    expect(stored[4].content).toContain('turn 5');
+  });
+
+  it('tracks ping-pong counters independently for different threads in same channel', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await processTaskIpc(
+        {
+          type: 'send_agent_message',
+          targetAgent: 'third-group',
+          text: `thread-a turn ${i + 1}`,
+          sourceChatJid: 'other@g.us',
+          threadTs: '1700000000.100000',
+        },
+        'other-group',
+        false,
+        deps,
+      );
+    }
+
+    await processTaskIpc(
+      {
+        type: 'send_agent_message',
+        targetAgent: 'third-group',
+        text: 'thread-b first message',
+        sourceChatJid: 'other@g.us',
+        threadTs: '1700000000.200000',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(sentMessages).toHaveLength(6);
+    expect(sentMessages[5].text).toContain('thread-b first message');
   });
 });

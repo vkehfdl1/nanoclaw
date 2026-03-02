@@ -6,11 +6,21 @@ import { CronExpressionParser } from 'cron-parser';
 import {
   DATA_DIR,
   IPC_POLL_INTERVAL,
+  MAX_PING_PONG_TURNS,
   MAIN_GROUP_FOLDER,
   TIMEZONE,
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getAgentsByChannel,
+  getChannelsForAgent,
+  getTaskById,
+  storeChatMetadata,
+  storeMessageDirect,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { formatOutbound } from './router.js';
@@ -33,6 +43,30 @@ export interface IpcDeps {
 }
 
 let ipcWatcherRunning = false;
+const pingPongCounts = new Map<string, number>();
+
+function normalizeAgentFolder(value: string): string {
+  return value.trim().replace(/^@+/, '');
+}
+
+function toAgentMention(trigger: string | undefined, folder: string): string {
+  const trimmed = trigger?.trim();
+  if (!trimmed) return `@${folder}`;
+  return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
+}
+
+function resolveAgentMention(
+  folder: string,
+  registeredGroups: Record<string, RegisteredGroup>,
+): string {
+  const group = Object.values(registeredGroups).find((g) => g.folder === folder);
+  return toAgentMention(group?.trigger, folder);
+}
+
+/** @internal - for tests only */
+export function _resetPingPongCounts(): void {
+  pingPongCounts.clear();
+}
 
 export function startIpcWatcher(deps: IpcDeps): void {
   if (ipcWatcherRunning) {
@@ -186,6 +220,11 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
+    targetAgent?: string;
+    text?: string;
+    channelJid?: string;
+    sourceChatJid?: string;
+    threadTs?: string;
     // For register_group
     jid?: string;
     name?: string;
@@ -437,6 +476,118 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'send_agent_message': {
+      const messageText = data.text?.trim();
+      if (!data.targetAgent || !messageText) {
+        logger.warn(
+          { sourceGroup, targetAgent: data.targetAgent },
+          'Invalid send_agent_message request - missing required fields',
+        );
+        break;
+      }
+
+      const targetAgent = normalizeAgentFolder(data.targetAgent);
+      if (!targetAgent) {
+        logger.warn(
+          { sourceGroup, targetAgent: data.targetAgent },
+          'Invalid send_agent_message request - empty target agent',
+        );
+        break;
+      }
+
+      const targetChannels = getChannelsForAgent(targetAgent);
+      if (targetChannels.length === 0) {
+        logger.warn(
+          { sourceGroup, targetAgent },
+          'Cannot send cross-agent message: target agent has no registered channels',
+        );
+        break;
+      }
+
+      let targetJid: string;
+      if (data.channelJid) {
+        if (!targetChannels.includes(data.channelJid)) {
+          logger.warn(
+            { sourceGroup, targetAgent, channelJid: data.channelJid },
+            'Cannot send cross-agent message: target agent not registered in requested channel',
+          );
+          break;
+        }
+        targetJid = data.channelJid;
+      } else {
+        targetJid = targetChannels[0];
+      }
+
+      const threadTs = data.threadTs?.trim();
+      const threadKey = threadTs || data.sourceChatJid || targetJid;
+      const pingPongKey = `${sourceGroup}::${targetAgent}::${threadKey}`;
+      const nextCount = (pingPongCounts.get(pingPongKey) ?? 0) + 1;
+      if (nextCount > MAX_PING_PONG_TURNS) {
+        logger.warn(
+          {
+            sourceGroup,
+            targetAgent,
+            targetJid,
+            threadKey,
+            nextCount,
+            maxPingPongTurns: MAX_PING_PONG_TURNS,
+          },
+          'Cross-agent message blocked: ping-pong limit exceeded',
+        );
+        break;
+      }
+      pingPongCounts.set(pingPongKey, nextCount);
+
+      const sourceMention = resolveAgentMention(sourceGroup, registeredGroups);
+      const targetRegistration = getAgentsByChannel(targetJid).find(
+        (g) => g.folder === targetAgent,
+      );
+      const targetMention = toAgentMention(targetRegistration?.trigger, targetAgent);
+      const addressedText = messageText.toLowerCase().startsWith(targetMention.toLowerCase())
+        ? messageText
+        : `${targetMention} ${messageText}`;
+      const prefixed = `[from ${sourceMention}] ${addressedText}`;
+      const outbound = formatOutbound(prefixed);
+      if (!outbound) {
+        logger.info(
+          { sourceGroup, targetAgent, targetJid },
+          'Cross-agent message dropped after sanitization',
+        );
+        break;
+      }
+
+      await deps.sendMessage(targetJid, outbound);
+
+      const now = new Date().toISOString();
+      storeChatMetadata(targetJid, now);
+      const messageId = `cross-agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      storeMessageDirect({
+        id: messageId,
+        chat_jid: targetJid,
+        sender: `agent:${sourceGroup}`,
+        sender_name: sourceMention,
+        content: outbound,
+        timestamp: now,
+        is_from_me: true,
+        is_bot_message: true,
+        is_cross_agent: true,
+        agent_source: sourceGroup,
+        thread_ts: threadTs,
+      });
+
+      logger.info(
+        {
+          sourceGroup,
+          targetAgent,
+          targetJid,
+          threadKey,
+          pingPongCount: nextCount,
+        },
+        'Cross-agent IPC message sent',
+      );
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

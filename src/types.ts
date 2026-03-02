@@ -64,6 +64,8 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  is_cross_agent?: boolean;
+  agent_source?: string;
   /** Slack thread timestamp — set for messages that belong to (or start) a thread */
   thread_ts?: string;
 }

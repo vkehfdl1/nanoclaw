@@ -59,6 +59,10 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
+export const MAX_PING_PONG_TURNS = Math.max(
+  1,
+  parseInt(process.env.MAX_PING_PONG_TURNS || '5', 10) || 5,
+);
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

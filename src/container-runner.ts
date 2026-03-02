@@ -32,6 +32,7 @@ export interface ContainerInput {
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
+  threadTs?: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;

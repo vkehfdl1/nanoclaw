@@ -27,6 +27,8 @@ function createSchema(database: Database.Database): void {
       timestamp TEXT,
       is_from_me INTEGER,
       is_bot_message INTEGER DEFAULT 0,
+      is_cross_agent INTEGER DEFAULT 0,
+      agent_source TEXT,
       PRIMARY KEY (id, chat_jid),
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
@@ -99,6 +101,22 @@ function createSchema(database: Database.Database): void {
     database.prepare(
       `UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`,
     ).run(`${ASSISTANT_NAME}:%`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add cross-agent messaging columns if they don't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN is_cross_agent INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN agent_source TEXT`,
+    );
   } catch {
     /* column already exists */
   }
@@ -336,7 +354,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, is_cross_agent, agent_source, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -346,6 +364,8 @@ export function storeMessage(msg: NewMessage): void {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.is_cross_agent ? 1 : 0,
+    msg.agent_source ?? null,
     msg.thread_ts ?? null,
   );
 }
@@ -362,10 +382,12 @@ export function storeMessageDirect(msg: {
   timestamp: string;
   is_from_me: boolean;
   is_bot_message?: boolean;
+  is_cross_agent?: boolean;
+  agent_source?: string;
   thread_ts?: string;
 }): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, is_cross_agent, agent_source, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -375,6 +397,8 @@ export function storeMessageDirect(msg: {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.is_cross_agent ? 1 : 0,
+    msg.agent_source ?? null,
     msg.thread_ts ?? null,
   );
 }
@@ -387,13 +411,13 @@ export function getNewMessages(
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
   const placeholders = jids.map(() => '?').join(',');
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
+  // Filter bot messages using the is_bot_message flag plus content-prefix
+  // backstop, but always keep cross-agent rows.
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders})
-      AND is_bot_message = 0 AND content NOT LIKE ?
+      AND ((is_bot_message = 0 AND content NOT LIKE ?) OR is_cross_agent = 1)
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
@@ -415,13 +439,13 @@ export function getMessagesSince(
   sinceTimestamp: string,
   botPrefix: string,
 ): NewMessage[] {
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
+  // Filter bot messages using the is_bot_message flag plus content-prefix
+  // backstop, but always keep cross-agent rows.
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
-      AND is_bot_message = 0 AND content NOT LIKE ?
+      AND ((is_bot_message = 0 AND content NOT LIKE ?) OR is_cross_agent = 1)
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;

@@ -269,6 +269,7 @@ async function processGroupMessages(
   }
 
   const prompt = formatMessages(missedMessages);
+  const activeThreadTs = missedMessages[missedMessages.length - 1]?.thread_ts;
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -300,7 +301,7 @@ async function processGroupMessages(
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, activeThreadTs, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
@@ -354,6 +355,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  threadTs: string | undefined,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
@@ -415,6 +417,7 @@ async function runAgent(
         sessionId,
         groupFolder: group.folder,
         chatJid,
+        threadTs,
         isMain,
         assistantName: ASSISTANT_NAME,
       },

@@ -180,6 +180,25 @@ describe('getMessagesSince', () => {
     const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:04.000Z', 'Andy');
     expect(msgs).toHaveLength(0);
   });
+
+  it('includes cross-agent bot messages', () => {
+    storeMessage({
+      id: 'm6',
+      chat_jid: 'group@g.us',
+      sender: 'agent:marketer',
+      sender_name: '@marketer',
+      content: '[from @marketer] ping',
+      timestamp: '2024-01-01T00:00:05.000Z',
+      is_bot_message: true,
+      is_cross_agent: true,
+      agent_source: 'marketer',
+    });
+
+    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:04.000Z', 'Andy');
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe('m6');
+    expect(msgs[0].content).toContain('[from @marketer]');
+  });
 });
 
 // --- getNewMessages ---
@@ -234,6 +253,31 @@ describe('getNewMessages', () => {
     const { messages, newTimestamp } = getNewMessages([], '', 'Andy');
     expect(messages).toHaveLength(0);
     expect(newTimestamp).toBe('');
+  });
+
+  it('returns cross-agent bot messages from getNewMessages', () => {
+    storeMessage({
+      id: 'a5',
+      chat_jid: 'group2@g.us',
+      sender: 'agent:marketer',
+      sender_name: '@marketer',
+      content: '[from @marketer] status update',
+      timestamp: '2024-01-01T00:00:05.000Z',
+      is_bot_message: true,
+      is_cross_agent: true,
+      agent_source: 'marketer',
+    });
+
+    const { messages, newTimestamp } = getNewMessages(
+      ['group1@g.us', 'group2@g.us'],
+      '2024-01-01T00:00:04.000Z',
+      'Andy',
+    );
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].id).toBe('a5');
+    expect(messages[0].content).toContain('[from @marketer]');
+    expect(newTimestamp).toBe('2024-01-01T00:00:05.000Z');
   });
 });
 

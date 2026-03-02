@@ -20,6 +20,7 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const threadTs = process.env.NANOCLAW_THREAD_TS;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -60,6 +61,35 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+  },
+);
+
+server.tool(
+  'send_agent_message',
+  `Send a cross-agent message to another registered agent.
+The host will resolve the target agent's channel, post the message for visibility, and store it so the target agent can process it.`,
+  {
+    target_agent: z.string().describe('Target agent folder name (for example: "marketer" or "pm-autorag")'),
+    text: z.string().describe('Message body to send'),
+    channel_jid: z.string().optional().describe('Optional explicit channel JID where the target agent is registered (for example: "slack:C12345678")'),
+  },
+  async (args) => {
+    const data = {
+      type: 'send_agent_message',
+      sourceAgent: groupFolder,
+      sourceChatJid: chatJid,
+      threadTs,
+      targetAgent: args.target_agent,
+      text: args.text,
+      channelJid: args.channel_jid,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Cross-agent message queued for "${args.target_agent}".` }],
+    };
   },
 );
 
