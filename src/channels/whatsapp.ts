@@ -27,6 +27,7 @@ export interface WhatsAppChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+// Optional legacy connector used when Slack is not configured.
 export class WhatsAppChannel implements Channel {
   name = 'whatsapp';
 
@@ -70,7 +71,7 @@ export class WhatsAppChannel implements Channel {
 
       if (qr) {
         const msg =
-          'WhatsApp authentication required. Run /setup in Claude Code.';
+          'WhatsApp authentication required for legacy fallback channel. Run /setup in Claude Code.';
         logger.error(msg);
         exec(
           `osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`,
@@ -100,9 +101,9 @@ export class WhatsAppChannel implements Channel {
         }
       } else if (connection === 'open') {
         this.connected = true;
-        logger.info('Connected to WhatsApp');
+        logger.info('Connected to WhatsApp legacy fallback channel');
 
-        // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
+        // Announce availability so WhatsApp relays subsequent presence updates (typing indicators).
         this.sock.sendPresenceUpdate('available').catch((err) => {
           logger.warn({ err }, 'Failed to send presence update');
         });
@@ -251,7 +252,7 @@ export class WhatsAppChannel implements Channel {
   }
 
   /**
-   * Sync group metadata from WhatsApp.
+   * Sync group metadata from the WhatsApp legacy connector.
    * Fetches all participating groups and stores their names in the database.
    * Called on startup, daily, and on-demand via IPC.
    */
@@ -268,7 +269,7 @@ export class WhatsAppChannel implements Channel {
     }
 
     try {
-      logger.info('Syncing group metadata from WhatsApp...');
+      logger.info('Syncing group metadata from WhatsApp legacy connector...');
       const groups = await this.sock.groupFetchAllParticipating();
 
       let count = 0;

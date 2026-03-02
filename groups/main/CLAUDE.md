@@ -63,15 +63,15 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
 
-## WhatsApp Formatting (and other messaging apps)
+## Slack-First Message Formatting
 
-Do NOT use markdown headings (##) in WhatsApp messages. Only use:
+Use plain text that reads cleanly in Slack channels (and also works in other messaging apps). Preferred formatting:
 - *Bold* (single asterisks) (NEVER **double asterisks**)
 - _Italic_ (underscores)
 - • Bullets (bullet points)
 - ```Code blocks``` (triple backticks)
 
-Keep messages clean and readable for WhatsApp.
+Avoid heavy markdown (like `##` headings or `[links](url)`), and keep messages concise and readable in Slack.
 
 ---
 
@@ -105,7 +105,7 @@ Available groups are provided in `/workspace/ipc/available_groups.json`:
 {
   "groups": [
     {
-      "jid": "120363336345536173@g.us",
+      "jid": "slack:C0123456789",
       "name": "Family Chat",
       "lastActivity": "2026-01-31T12:00:00.000Z",
       "isRegistered": false
@@ -115,7 +115,7 @@ Available groups are provided in `/workspace/ipc/available_groups.json`:
 }
 ```
 
-Groups are ordered by most recent activity. The list is synced from WhatsApp daily.
+Groups are ordered by most recent activity. The list is synced from the active channel connector (Slack by default) on a regular refresh cycle.
 
 If a group the user mentions isn't in the list, request a fresh sync:
 
@@ -131,7 +131,7 @@ Then wait a moment and re-read `available_groups.json`.
 sqlite3 /workspace/project/store/messages.db "
   SELECT jid, name, last_message_time
   FROM chats
-  WHERE jid LIKE '%@g.us' AND jid != '__group_sync__'
+  WHERE is_group = 1 AND jid != '__group_sync__'
   ORDER BY last_message_time DESC
   LIMIT 10;
 "
@@ -143,7 +143,7 @@ Groups are registered in `/workspace/project/data/registered_groups.json`:
 
 ```json
 {
-  "1234567890-1234567890@g.us": {
+  "slack:C0123456789": {
     "name": "Family Chat",
     "folder": "family-chat",
     "trigger": "@Andy",
@@ -153,7 +153,7 @@ Groups are registered in `/workspace/project/data/registered_groups.json`:
 ```
 
 Fields:
-- **Key**: The WhatsApp JID (unique identifier for the chat)
+- **Key**: Channel JID (Slack channel IDs like `slack:C...`, plus other connector-specific IDs)
 - **name**: Display name for the group
 - **folder**: Folder name under `groups/` for this group's files and memory
 - **trigger**: The trigger word (usually same as global, but could differ)
@@ -186,7 +186,7 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
 
 ```json
 {
-  "1234567890@g.us": {
+  "slack:C0123456789": {
     "name": "Dev Team",
     "folder": "dev-team",
     "trigger": "@Andy",

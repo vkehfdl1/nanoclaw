@@ -715,10 +715,10 @@ SecondBrain entries written by this agent are stored in `/workspace/secondbrain/
 
 ## Message Formatting
 
-NEVER use markdown. Only use WhatsApp/Telegram formatting:
+Use Slack-friendly plain text formatting:
 - *single asterisks* for bold (NEVER **double asterisks**)
 - _underscores_ for italic
 - • bullet points
 - ```triple backticks``` for code
 
-No ## headings. No [links](url). No **double stars**.
+Avoid heavy markdown (`##` headings or `[links](url)`), and keep messages short and readable in Slack threads/channels.

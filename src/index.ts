@@ -621,15 +621,17 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels
+  // Create and connect channels (Slack primary, WhatsApp as legacy fallback)
   if (SLACK_BOT_TOKEN && SLACK_APP_TOKEN) {
     slack = new SlackChannel({ ...channelOpts, botToken: SLACK_BOT_TOKEN, appToken: SLACK_APP_TOKEN });
     channels.push(slack);
     await slack.connect();
+    logger.info('Slack channel connected as primary transport');
   } else {
     whatsapp = new WhatsAppChannel(channelOpts);
     channels.push(whatsapp);
     await whatsapp.connect();
+    logger.info('Slack tokens missing; connected legacy WhatsApp fallback channel');
   }
 
   // Start subsystems (independently of connection handler)
@@ -666,8 +668,8 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: (force) => {
-      if (whatsapp) return whatsapp.syncGroupMetadata(force);
       if (slack) return slack.syncChannels();
+      if (whatsapp) return whatsapp.syncGroupMetadata(force);
       return Promise.resolve();
     },
     getAvailableGroups,

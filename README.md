@@ -64,13 +64,14 @@ Compared to the upstream NanoClaw baseline, this repository currently includes:
 
 ## What It Supports
 
-- **WhatsApp I/O** - Message Claude from your phone
+- **Slack I/O (primary)** - Message Claude in Slack channels and DMs
 - **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted
 - **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
+- **Optional WhatsApp fallback** - Keep compatibility with existing WhatsApp-based setups
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -117,7 +118,7 @@ Then run `/update`. Claude Code fetches upstream, previews changes, merges with 
 
 **Don't add features. Add skills.**
 
-If you want to add Telegram support, don't create a PR that adds Telegram alongside WhatsApp. Instead, contribute a skill file (`.claude/skills/add-telegram/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation to use Telegram.
+If you want to add Telegram support, don't create a PR that adds Telegram alongside the default Slack setup (or the legacy WhatsApp fallback). Instead, contribute a skill file (`.claude/skills/add-telegram/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation to use Telegram.
 
 Users then run `/add-telegram` on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
 
@@ -144,14 +145,15 @@ Skills we'd like to see:
 ## Architecture
 
 ```
-WhatsApp (baileys) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
+Slack (Socket Mode, primary) / WhatsApp (baileys, legacy fallback) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
 ```
 
 Single Node.js process. Agents execute in isolated Linux containers with mounted directories. Per-group message queue with concurrency control. IPC via filesystem.
 
 Key files:
 - `src/index.ts` - Orchestrator: state, message loop, agent invocation
-- `src/channels/whatsapp.ts` - WhatsApp connection, auth, send/receive
+- `src/channels/slack.ts` - Primary Slack connection, mentions, send/receive
+- `src/channels/whatsapp.ts` - Optional legacy WhatsApp fallback channel
 - `src/ipc.ts` - IPC watcher and task processing
 - `src/router.ts` - Message formatting and outbound routing
 - `src/group-queue.ts` - Per-group queue with global concurrency limit
@@ -162,9 +164,9 @@ Key files:
 
 ## FAQ
 
-**Why WhatsApp and not Telegram/Signal/etc?**
+**Why is Slack the default channel?**
 
-Because I use WhatsApp. Fork it and run a skill to change it. That's the whole point.
+Multi-agent coordination in this fork is centered on Slack channels and @mentions. WhatsApp support remains available as an optional legacy fallback when Slack tokens are not configured.
 
 **Why Docker?**
 
