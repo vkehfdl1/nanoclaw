@@ -150,7 +150,7 @@
         "REQ-044: Marketer is also registered to a shared channel with Dobby for cross-agent communication, with `trigger=@marketer`."
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -165,7 +165,7 @@
         "REQ-049: Marketer can autonomously reply to comments/mentions on published SNS posts without requiring approval."
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

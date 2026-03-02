@@ -159,6 +159,15 @@ async function triggerMention(event: Record<string, unknown>) {
   }
 }
 
+// --- Helper to fire a fake reaction_added event ---
+
+async function triggerReaction(event: Record<string, unknown>) {
+  const handlers = eventHandlers.get('reaction_added') ?? [];
+  for (const handler of handlers) {
+    await handler({ event: event as never, client: fakeClient });
+  }
+}
+
 // --- Test helpers ---
 
 const REGISTERED_JID = 'slack:C123456789';
@@ -195,6 +204,27 @@ function createPmAgentOpts(overrides?: Partial<SlackChannelOpts>): SlackChannelO
         trigger: '@Andy',
         added_at: '2024-01-01T00:00:00.000Z',
         role: 'pm-agent',
+      },
+    })),
+    botToken: 'xoxb-test-token',
+    appToken: 'xapp-test-token',
+    ...overrides,
+  };
+}
+
+/** Opts for the dedicated marketer channel (role: 'marketer') */
+function createMarketerOpts(overrides?: Partial<SlackChannelOpts>): SlackChannelOpts {
+  return {
+    onMessage: vi.fn(),
+    onChatMetadata: vi.fn(),
+    registeredGroups: vi.fn(() => ({
+      [REGISTERED_JID]: {
+        name: 'Marketer Channel',
+        folder: 'marketer',
+        trigger: '@marketer',
+        added_at: '2024-01-01T00:00:00.000Z',
+        requiresTrigger: false,
+        role: 'marketer',
       },
     })),
     botToken: 'xoxb-test-token',
@@ -558,6 +588,107 @@ describe('SlackChannel', () => {
     });
   });
 
+  describe('marketer approval flow', () => {
+    it('creates an approval trigger message when checkmark reaction is added to a marketer draft', async () => {
+      const opts = createMarketerOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      fakeClient.conversations.history.mockResolvedValue({
+        messages: [
+          {
+            ts: '1700000100.000001',
+            text: '*Marketer:* [DRAFT - x]\nDraft body\n\nReact with :white_check_mark: or reply "승인" to approve.',
+            bot_id: 'B_MARKETER',
+          },
+        ],
+      });
+
+      await triggerReaction({
+        type: 'reaction_added',
+        user: 'U_APPROVER',
+        reaction: 'white_check_mark',
+        item: {
+          type: 'message',
+          channel: CHANNEL_ID,
+          ts: '1700000100.000001',
+        },
+        event_ts: '1700000105.000001',
+      });
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        REGISTERED_JID,
+        expect.objectContaining({
+          sender: 'U_APPROVER',
+          thread_ts: '1700000100.000001',
+        }),
+      );
+      const msg = vi.mocked(opts.onMessage).mock.calls[0][1];
+      expect(msg.content).toContain('@marketer');
+      expect(msg.content).toContain('승인');
+    });
+
+    it('normalizes 승인 replies in draft threads into approval trigger messages', async () => {
+      const opts = createMarketerOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      fakeClient.conversations.replies.mockResolvedValue({
+        messages: [
+          {
+            ts: '1700000200.000001',
+            text: '*Marketer:* [DRAFT - linkedin]\nDraft body\n\nReact with :white_check_mark: or reply "승인" to approve.',
+            bot_id: 'B_MARKETER',
+            thread_ts: '1700000200.000001',
+          },
+        ],
+      });
+
+      await triggerMessage({
+        channel: CHANNEL_ID,
+        ts: '1700000201.000001',
+        thread_ts: '1700000200.000001',
+        text: '승인',
+        user: 'U_APPROVER',
+      });
+
+      const msg = vi.mocked(opts.onMessage).mock.calls[0][1];
+      expect(msg.content).toContain('@marketer');
+      expect(msg.content).toContain('승인');
+      expect(msg.thread_ts).toBe('1700000200.000001');
+    });
+
+    it('normalizes approve replies in draft threads into approval trigger messages', async () => {
+      const opts = createMarketerOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      fakeClient.conversations.replies.mockResolvedValue({
+        messages: [
+          {
+            ts: '1700000300.000001',
+            text: '*Marketer:* [DRAFT - threads]\nDraft body\n\nReact with :white_check_mark: or reply "승인" to approve.',
+            bot_id: 'B_MARKETER',
+            thread_ts: '1700000300.000001',
+          },
+        ],
+      });
+
+      await triggerMessage({
+        channel: CHANNEL_ID,
+        ts: '1700000301.000001',
+        thread_ts: '1700000300.000001',
+        text: 'approve',
+        user: 'U_APPROVER',
+      });
+
+      const msg = vi.mocked(opts.onMessage).mock.calls[0][1];
+      expect(msg.content).toContain('@marketer');
+      expect(msg.content.toLowerCase()).toContain('approve');
+      expect(msg.thread_ts).toBe('1700000300.000001');
+    });
+  });
+
   // --- sendMessage: thread-aware response posting (core of Sub-AC 2.3) ---
 
   describe('sendMessage — thread-aware response posting', () => {
@@ -700,6 +831,17 @@ describe('SlackChannel', () => {
       const call = fakeClient.chat.postMessage.mock.calls[0][0];
       // Trigger is '@Andy' → label is 'Andy'
       expect(call.text).toMatch(/^\*Andy:\*/);
+    });
+
+    it('appends the marketer approval instruction for draft messages', async () => {
+      const channel = new SlackChannel(createMarketerOpts());
+      await connectChannel(channel);
+
+      await channel.sendMessage(REGISTERED_JID, '[DRAFT - x]\nLaunch post draft');
+
+      const call = fakeClient.chat.postMessage.mock.calls[0][0];
+      expect(call.text).toContain('[DRAFT - x]');
+      expect(call.text).toContain('React with :white_check_mark: or reply "승인" to approve.');
     });
 
     it('does not send messages when formatOutbound returns empty string', async () => {

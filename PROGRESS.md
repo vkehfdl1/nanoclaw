@@ -46,3 +46,10 @@
 - Title: PM PR review via subagent
 - Attempts: 1
 
+## US-010 — PASS (2026-03-02T04:21:19Z)
+- Title: Marketer agent registration and infrastructure
+- Attempts: 1
+
+## US-011 — PASS (2026-03-02T04:30:51Z)
+- Title: Marketer content approval flow
+- Attempts: 1

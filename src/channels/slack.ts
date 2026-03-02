@@ -24,6 +24,14 @@ export interface SlackChannelOpts {
 
 export class SlackChannel implements Channel {
   name = 'slack';
+  private static readonly MARKETER_FOLDER = 'marketer';
+  private static readonly DRAFT_TAG_REGEX = /\[DRAFT\s*-\s*[^\]\n]+\]/i;
+  private static readonly MARKETER_APPROVAL_INSTRUCTION =
+    'React with :white_check_mark: or reply "승인" to approve.';
+  private static readonly APPROVAL_REACTIONS = new Set([
+    'white_check_mark',
+    'heavy_check_mark',
+  ]);
 
   private app: App;
   private connected = false;
@@ -59,6 +67,127 @@ export class SlackChannel implements Channel {
     return label || ASSISTANT_NAME;
   }
 
+  private toIsoTimestamp(slackTs: string | undefined): string {
+    if (!slackTs) return new Date().toISOString();
+    const wholeSeconds = Number(slackTs.split('.')[0]);
+    if (!Number.isFinite(wholeSeconds)) return new Date().toISOString();
+    return new Date(wholeSeconds * 1000).toISOString();
+  }
+
+  private isMarketerGroup(group: RegisteredGroup | undefined): boolean {
+    if (!group) return false;
+    return group.role === 'marketer' || group.folder === SlackChannel.MARKETER_FOLDER;
+  }
+
+  private isDraftMessageText(text: string): boolean {
+    return SlackChannel.DRAFT_TAG_REGEX.test(text);
+  }
+
+  private isApprovalReplyKeyword(text: string): '승인' | 'approve' | null {
+    const trimmed = text.trim();
+    if (/^승인(?:\s|$)/i.test(trimmed)) return '승인';
+    if (/^approve(?:\s|$)/i.test(trimmed)) return 'approve';
+    return null;
+  }
+
+  private normalizeMarketerDraftText(
+    group: RegisteredGroup | undefined,
+    outbound: string,
+  ): string {
+    if (!this.isMarketerGroup(group)) return outbound;
+
+    const trimmed = outbound.trim();
+    if (!this.isDraftMessageText(trimmed)) return outbound;
+
+    if (trimmed.includes(SlackChannel.MARKETER_APPROVAL_INSTRUCTION)) {
+      return trimmed;
+    }
+
+    return `${trimmed}\n\n${SlackChannel.MARKETER_APPROVAL_INSTRUCTION}`;
+  }
+
+  private async resolveSenderName(client: App['client'], userId: string): Promise<string> {
+    if (!userId || userId === 'unknown') return 'unknown';
+    try {
+      const userInfo = await client.users.info({ user: userId });
+      return (
+        userInfo.user?.profile?.display_name ||
+        userInfo.user?.real_name ||
+        userInfo.user?.name ||
+        userId
+      );
+    } catch {
+      return userId;
+    }
+  }
+
+  private isMessageFromSlackBot(
+    message: { botId?: string; userId?: string },
+  ): boolean {
+    return !!message.botId || (!!this.botUserId && message.userId === this.botUserId);
+  }
+
+  private async fetchMessageByTs(
+    client: App['client'],
+    channelId: string,
+    ts: string,
+  ): Promise<{ text: string; userId?: string; botId?: string } | null> {
+    const history = await client.conversations.history({
+      channel: channelId,
+      oldest: ts,
+      latest: ts,
+      inclusive: true,
+      limit: 1,
+    });
+    const msg = history.messages?.[0] as
+      | { text?: string; user?: string; bot_id?: string }
+      | undefined;
+    if (!msg || typeof msg.text !== 'string') return null;
+    return {
+      text: msg.text,
+      userId: msg.user,
+      botId: msg.bot_id,
+    };
+  }
+
+  private async fetchThreadRootMessage(
+    client: App['client'],
+    channelId: string,
+    threadTs: string,
+  ): Promise<{ text: string; userId?: string; botId?: string } | null> {
+    const replies = await client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+    const root = replies.messages?.[0] as
+      | { text?: string; user?: string; bot_id?: string }
+      | undefined;
+    if (!root || typeof root.text !== 'string') return null;
+    return {
+      text: root.text,
+      userId: root.user,
+      botId: root.bot_id,
+    };
+  }
+
+  private buildMarketerApprovalContent(
+    group: RegisteredGroup,
+    keyword: '승인' | 'approve',
+    draftThreadTs: string,
+    source: 'reaction' | 'thread-reply',
+  ): string {
+    const trigger = group.trigger?.trim() || '@marketer';
+    const mention = trigger.startsWith('@') ? trigger : `@${trigger}`;
+
+    if (source === 'reaction') {
+      return `${mention} 승인\nApproval source: :white_check_mark:\nDraft thread: ${draftThreadTs}`;
+    }
+
+    return `${mention} ${keyword}\nDraft thread: ${draftThreadTs}`;
+  }
+
   async connect(): Promise<void> {
     // Resolve bot user ID so we can filter self-messages
     try {
@@ -83,9 +212,7 @@ export class SlackChannel implements Channel {
 
       const channelId = message.channel;
       const chatJid = `slack:${channelId}`;
-      const timestamp = new Date(
-        Number(message.ts.split('.')[0]) * 1000,
-      ).toISOString();
+      const timestamp = this.toIsoTimestamp(message.ts);
 
       // Report chat metadata for channel discovery
       const isGroup = channelId.startsWith('C') || channelId.startsWith('G');
@@ -99,8 +226,9 @@ export class SlackChannel implements Channel {
       // The app_mention handler fires separately and will extract richer context
       // (thread history, channel history) before storing the message.
       const rawText = ('text' in message ? message.text : '') || '';
+      const group = groups[chatJid];
       if (
-        isPmAgentGroup(groups[chatJid]) &&
+        isPmAgentGroup(group) &&
         this.botUserId &&
         rawText.includes(`<@${this.botUserId}>`)
       ) {
@@ -109,22 +237,11 @@ export class SlackChannel implements Channel {
 
       // Resolve sender display name
       const userId = ('user' in message ? message.user : undefined) || 'unknown';
-      let senderName = userId;
-      try {
-        const userInfo = await client.users.info({ user: userId });
-        senderName =
-          userInfo.user?.profile?.display_name ||
-          userInfo.user?.real_name ||
-          userInfo.user?.name ||
-          senderName;
-      } catch {
-        // Fall back to user ID
-      }
+      const senderName = await this.resolveSenderName(client, userId);
 
       // Download any attached files into the group workspace
       const filePaths: string[] = [];
       if (hasFiles) {
-        const group = groups[chatJid];
         const downloadsDir = path.join(GROUPS_DIR, group.folder, 'downloads');
         fs.mkdirSync(downloadsDir, { recursive: true });
 
@@ -175,6 +292,43 @@ export class SlackChannel implements Channel {
           ? message.thread_ts
           : message.ts;
 
+      // Approval replies in a marketer draft thread are normalized into a
+      // trigger message so the marketer agent can publish without extra parsing.
+      if (
+        !fromMe &&
+        this.isMarketerGroup(group) &&
+        typeof message.thread_ts === 'string' &&
+        message.thread_ts !== message.ts
+      ) {
+        const keyword = this.isApprovalReplyKeyword(rawText);
+        if (keyword) {
+          try {
+            const root = await this.fetchThreadRootMessage(
+              client,
+              channelId,
+              message.thread_ts,
+            );
+            if (
+              root &&
+              this.isMessageFromSlackBot(root) &&
+              this.isDraftMessageText(root.text)
+            ) {
+              content = this.buildMarketerApprovalContent(
+                group,
+                keyword,
+                message.thread_ts,
+                'thread-reply',
+              );
+            }
+          } catch (err) {
+            logger.error(
+              { chatJid, threadTs: message.thread_ts, err },
+              'Failed to inspect marketer draft thread for approval reply',
+            );
+          }
+        }
+      }
+
       // Update the active thread for this channel so sendMessage() can reply in-thread
       if (!fromMe) {
         this.activeThreadTs.set(chatJid, threadTs);
@@ -194,15 +348,69 @@ export class SlackChannel implements Channel {
       });
     });
 
+    // Treat checkmark reactions on marketer drafts as explicit approvals.
+    this.app.event('reaction_added', async ({ event, client }) => {
+      if (!SlackChannel.APPROVAL_REACTIONS.has(event.reaction || '')) return;
+      if (!event.item || event.item.type !== 'message') return;
+      if (!event.item.channel || !event.item.ts) return;
+
+      const channelId = event.item.channel;
+      const chatJid = `slack:${channelId}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!this.isMarketerGroup(group)) return;
+
+      const timestamp = this.toIsoTimestamp(event.event_ts || event.item.ts);
+      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'slack', true);
+
+      let reactedMessage: { text: string; userId?: string; botId?: string } | null = null;
+      try {
+        reactedMessage = await this.fetchMessageByTs(client, channelId, event.item.ts);
+      } catch (err) {
+        logger.error(
+          { chatJid, threadTs: event.item.ts, err },
+          'Failed to fetch reacted Slack message',
+        );
+        return;
+      }
+
+      if (
+        !reactedMessage ||
+        !this.isMessageFromSlackBot(reactedMessage) ||
+        !this.isDraftMessageText(reactedMessage.text)
+      ) {
+        return;
+      }
+
+      const approverId = event.user || 'unknown';
+      const senderName = await this.resolveSenderName(client, approverId);
+      const content = this.buildMarketerApprovalContent(
+        group,
+        '승인',
+        event.item.ts,
+        'reaction',
+      );
+
+      this.activeThreadTs.set(chatJid, event.item.ts);
+      this.opts.onMessage(chatJid, {
+        id: event.event_ts || `reaction-${event.item.ts}-${approverId}`,
+        chat_jid: chatJid,
+        sender: approverId,
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+        is_bot_message: false,
+        thread_ts: event.item.ts,
+      });
+    });
+
     // Listen for app_mention events (when someone @mentions the bot).
     // For PM agent channels this handler extracts rich conversation context
     // (thread history or recent channel messages) before storing the message.
     this.app.event('app_mention', async ({ event, client }) => {
       const channelId = event.channel;
       const chatJid = `slack:${channelId}`;
-      const timestamp = new Date(
-        Number(event.ts.split('.')[0]) * 1000,
-      ).toISOString();
+      const timestamp = this.toIsoTimestamp(event.ts);
 
       this.opts.onChatMetadata(chatJid, timestamp, undefined, 'slack', true);
 
@@ -288,17 +496,7 @@ export class SlackChannel implements Channel {
       // -----------------------------------------------------------------------
       // Non-PM agent channel: standard @mention handling (resolve name only).
       // -----------------------------------------------------------------------
-      let senderName: string = userId;
-      try {
-        const userInfo = await client.users.info({ user: userId });
-        senderName =
-          userInfo.user?.profile?.display_name ||
-          userInfo.user?.real_name ||
-          userInfo.user?.name ||
-          senderName;
-      } catch {
-        // Fall back to user ID
-      }
+      const senderName = await this.resolveSenderName(client, userId);
 
       logger.debug({ chatJid, mentionThreadTs }, 'Active thread updated from @mention');
 
@@ -336,6 +534,10 @@ export class SlackChannel implements Channel {
     const assistantLabel = this.getAssistantLabel(jid);
     const outbound = formatOutbound(text);
     if (!outbound) return;
+    const normalizedOutbound = this.normalizeMarketerDraftText(
+      this.opts.registeredGroups()[jid],
+      outbound,
+    );
 
     // Use the explicitly provided threadTs, fall back to the auto-tracked active thread
     const replyThreadTs = threadTs ?? this.activeThreadTs.get(jid);
@@ -343,14 +545,14 @@ export class SlackChannel implements Channel {
     try {
       await this.app.client.chat.postMessage({
         channel: channelId,
-        text: `*${assistantLabel}:* ${outbound}`,
+        text: `*${assistantLabel}:* ${normalizedOutbound}`,
         // Use mrkdwn so the bot name is bold
         mrkdwn: true,
         // Reply in-thread when we have a tracked thread (PM agent replies go into thread)
         ...(replyThreadTs ? { thread_ts: replyThreadTs } : {}),
       });
       logger.info(
-        { jid, length: outbound.length, inThread: !!replyThreadTs },
+        { jid, length: normalizedOutbound.length, inThread: !!replyThreadTs },
         'Slack message sent',
       );
     } catch (err) {
