@@ -5,6 +5,7 @@ import {
   escapeXml,
   formatMessages,
   formatOutbound,
+  normalizeSlackMarkdown,
   stripInternalTags,
 } from './router.js';
 import { NewMessage } from './types.js';
@@ -183,6 +184,56 @@ describe('stripInternalTags', () => {
   });
 });
 
+describe('normalizeSlackMarkdown', () => {
+  it('converts double asterisks to single', () => {
+    expect(normalizeSlackMarkdown('**bold**')).toBe('*bold*');
+  });
+
+  it('converts multiple double-asterisk spans', () => {
+    expect(normalizeSlackMarkdown('**a** and **b**')).toBe('*a* and *b*');
+  });
+
+  it('leaves single asterisks unchanged', () => {
+    expect(normalizeSlackMarkdown('*already bold*')).toBe('*already bold*');
+  });
+
+  it('converts markdown headings to bold text', () => {
+    expect(normalizeSlackMarkdown('## Heading')).toBe('*Heading*');
+  });
+
+  it('converts h1 through h6', () => {
+    expect(normalizeSlackMarkdown('# H1')).toBe('*H1*');
+    expect(normalizeSlackMarkdown('### H3')).toBe('*H3*');
+    expect(normalizeSlackMarkdown('###### H6')).toBe('*H6*');
+  });
+
+  it('only converts headings at line start', () => {
+    expect(normalizeSlackMarkdown('text ## not heading')).toBe('text ## not heading');
+  });
+
+  it('converts markdown links to text (url)', () => {
+    expect(normalizeSlackMarkdown('[Click here](https://example.com)')).toBe(
+      'Click here (https://example.com)',
+    );
+  });
+
+  it('handles multiple links in one line', () => {
+    expect(
+      normalizeSlackMarkdown('[a](http://a.com) and [b](http://b.com)'),
+    ).toBe('a (http://a.com) and b (http://b.com)');
+  });
+
+  it('handles mixed formatting', () => {
+    const input = '## Title\n**bold** and [link](http://x.com)';
+    const expected = '*Title*\n*bold* and link (http://x.com)';
+    expect(normalizeSlackMarkdown(input)).toBe(expected);
+  });
+
+  it('passes through plain text unchanged', () => {
+    expect(normalizeSlackMarkdown('plain text')).toBe('plain text');
+  });
+});
+
 describe('formatOutbound', () => {
   it('returns text with internal tags stripped', () => {
     expect(formatOutbound('hello world')).toBe('hello world');
@@ -200,6 +251,18 @@ describe('formatOutbound', () => {
 
   it('returns only safe prefix for unclosed internal tags', () => {
     expect(formatOutbound('A <internal>hidden')).toBe('A');
+  });
+
+  it('normalizes Slack markdown in output', () => {
+    expect(formatOutbound('**bold** text')).toBe('*bold* text');
+  });
+
+  it('normalizes headings in output', () => {
+    expect(formatOutbound('## Title')).toBe('*Title*');
+  });
+
+  it('normalizes links in output', () => {
+    expect(formatOutbound('[link](http://x.com)')).toBe('link (http://x.com)');
   });
 });
 

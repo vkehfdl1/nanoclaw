@@ -37,10 +37,21 @@ export function stripInternalTags(text: string): string {
   return sanitized.trim();
 }
 
+export function normalizeSlackMarkdown(text: string): string {
+  let out = text;
+  // **bold** → *bold*
+  out = out.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  // ## Heading → *Heading*
+  out = out.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+  // [text](url) → text (url)
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
+  return out;
+}
+
 export function formatOutbound(rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
-  return text;
+  return normalizeSlackMarkdown(text);
 }
 
 export function routeOutbound(
