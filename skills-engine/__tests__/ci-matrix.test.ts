@@ -41,6 +41,17 @@ describe('ci-matrix', () => {
       expect(matrix[0].reason).toContain('src/config.ts');
     });
 
+    it('skips explicitly excluded overlapping pairs', () => {
+      const skills: SkillOverlapInfo[] = [
+        { name: 'add-discord', modifies: ['src/config.ts'], npmDependencies: [] },
+        { name: 'add-telegram', modifies: ['src/config.ts'], npmDependencies: [] },
+      ];
+
+      const matrix = computeOverlapMatrix(skills);
+
+      expect(matrix).toHaveLength(0);
+    });
+
     it('returns no entry for non-overlapping skills', () => {
       const skills: SkillOverlapInfo[] = [
         { name: 'telegram', modifies: ['src/telegram.ts'], npmDependencies: ['grammy'] },

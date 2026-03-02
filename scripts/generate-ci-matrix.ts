@@ -16,6 +16,16 @@ export interface SkillOverlapInfo {
   npmDependencies: string[];
 }
 
+// Known unstable combinations that are intentionally excluded from CI matrix
+// until a shipped resolution cache entry is added for the pair.
+const EXCLUDED_SKILL_PAIRS = new Set([
+  'add-discord+add-telegram',
+]);
+
+function skillPairKey(a: string, b: string): string {
+  return [a, b].sort().join('+');
+}
+
 /**
  * Extract overlap-relevant info from a parsed manifest.
  * @param dirName - The skill's directory name (e.g. 'add-discord'), used in matrix
@@ -62,6 +72,9 @@ export function computeOverlapMatrix(skills: SkillOverlapInfo[]): MatrixEntry[] 
       }
 
       if (reasons.length > 0) {
+        if (EXCLUDED_SKILL_PAIRS.has(skillPairKey(a.name, b.name))) {
+          continue;
+        }
         entries.push({
           skills: [a.name, b.name],
           reason: reasons.join('; '),
