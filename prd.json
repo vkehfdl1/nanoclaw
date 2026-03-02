@@ -180,7 +180,7 @@
         "REQ-054: WhatsApp channel code (`src/channels/whatsapp.ts`) remains functional but is clearly marked as optional/legacy."
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": ""
     }
   ]
