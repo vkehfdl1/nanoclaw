@@ -197,7 +197,10 @@ Agents cannot log into platforms themselves — the **user** must provide authen
 Use the helper script. It opens your **real Chrome browser** (not Playwright's Chromium) so sites like X and Reddit don't flag it as an automation browser:
 
 ```bash
-# First time only: install Playwright
+# Install dependencies first (playwright is included in package.json)
+npm ci
+
+# First time only: install Chrome browser for Playwright
 npx playwright install chrome
 
 # Then create sessions — a Chrome window opens, log in normally, close when done
