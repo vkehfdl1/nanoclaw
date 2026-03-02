@@ -43,7 +43,7 @@ claude
 
 **AI 原生:** 无安装向导(由 Claude Code 指导安装)。无需监控仪表盘，直接询问 Claude 即可了解系统状况。无调试工具(描述问题，Claude 会修复它)。
 
-**技能（Skills）优于功能（Features）:** 贡献者不应该向代码库添加新功能（例如支持 Telegram）。相反，他们应该贡献像 `/add-telegram` 这样的 [Claude Code 技能](https://code.claude.com/docs/en/skills)，这些技能可以改造您的 fork。最终，您得到的是只做您需要事情的整洁代码。
+**技能（Skills）优于功能（Features）:** 贡献者不应该直接向代码库添加新功能。相反，他们应该贡献 [Claude Code 技能](https://code.claude.com/docs/en/skills) 来改造您的 fork。最终，您得到的是只做您需要事情的整洁代码。
 
 **最好的工具套件，最好的模型:** 本项目运行在 Claude Agent SDK 之上，这意味着您直接运行的就是 Claude Code。工具套件至关重要。一个低效的工具套件会让再聪明的模型也显得迟钝，而一个优秀的套件则能赋予它们超凡的能力。Claude Code (在我看来) 是市面上最好的工具套件。
 
@@ -92,18 +92,16 @@ claude
 
 **不要添加功能，而是添加技能。**
 
-如果您想添加 Telegram 支持，不要创建一个 PR 同时添加 Telegram 和 WhatsApp。而是贡献一个技能文件 (`.claude/skills/add-telegram/SKILL.md`)，教 Claude Code 如何改造一个 NanoClaw 安装以使用 Telegram。
+如果您想添加新的渠道或集成，不要创建一个 PR 让默认代码同时支持所有选项。而是贡献一个技能文件（`.claude/skills/<skill-name>/SKILL.md`），教 Claude Code 如何改造一个 NanoClaw 安装。
 
-然后用户在自己的 fork 上运行 `/add-telegram`，就能得到只做他们需要事情的整洁代码，而不是一个试图支持所有用例的臃肿系统。
+然后用户在自己的 fork 上运行该技能，就能得到只做他们需要事情的整洁代码，而不是一个试图支持所有用例的臃肿系统。
 
 ### RFS (技能征集)
 
 我们希望看到的技能：
 
 **通信渠道**
-- `/add-telegram` - 添加 Telegram 作为渠道。应提供选项让用户选择替换 WhatsApp 或作为额外渠道添加。也应能将其添加为控制渠道（可以触发动作）或仅作为被其他地方触发的动作所使用的渠道。
 - `/add-slack` - 添加 Slack
-- `/add-discord` - 添加 Discord
 
 **平台支持**
 - `/setup-windows` - 通过 WSL2 + Docker 支持 Windows

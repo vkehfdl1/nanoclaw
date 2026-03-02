@@ -58,7 +58,7 @@ Compared to the upstream NanoClaw baseline, this repository currently includes:
 
 **AI-native.** No installation wizard; Claude Code guides setup. No monitoring dashboard; ask Claude what's happening. No debugging tools; describe the problem, Claude fixes it.
 
-**Skills over features.** Contributors shouldn't add features (e.g. support for Telegram) to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) like `/add-telegram` that transform your fork. You end up with clean code that does exactly what you need.
+**Skills over features.** Contributors shouldn't add features directly to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) that transform your fork. You end up with clean code that does exactly what you need.
 
 **Best harness, best model.** This runs on Claude Agent SDK, which means you're running Claude Code directly. The harness matters. A bad harness makes even smart models seem dumb, a good harness gives them superpowers. Claude Code is (IMO) the best harness available.
 
@@ -118,9 +118,9 @@ Then run `/update`. Claude Code fetches upstream, previews changes, merges with 
 
 **Don't add features. Add skills.**
 
-If you want to add Telegram support, don't create a PR that adds Telegram alongside the default Slack setup (or the legacy WhatsApp fallback). Instead, contribute a skill file (`.claude/skills/add-telegram/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation to use Telegram.
+If you want to add a new channel or integration, don't create a PR that bloats the default setup. Instead, contribute a skill file (`.claude/skills/<skill-name>/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation.
 
-Users then run `/add-telegram` on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
+Users then run that skill on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
 
 ### RFS (Request for Skills)
 

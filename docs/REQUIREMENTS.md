@@ -38,7 +38,7 @@ The codebase assumes you have an AI collaborator. It doesn't need to be excessiv
 
 ### Skills Over Features
 
-When people contribute, they shouldn't add "Telegram support alongside WhatsApp." They should contribute a skill like `/add-telegram` that transforms the codebase. Users fork the repo, run skills to customize, and end up with clean code that does exactly what they need - not a bloated system trying to support everyone's use case simultaneously.
+When people contribute, they shouldn't add new channels directly to the default codebase. They should contribute skills that transform the codebase. Users fork the repo, run skills to customize, and end up with clean code that does exactly what they need - not a bloated system trying to support everyone's use case simultaneously.
 
 ---
 
@@ -48,11 +48,8 @@ Skills we'd love contributors to build:
 
 ### Communication Channels
 Skills to add or switch to different messaging platforms:
-- `/add-telegram` - Add Telegram as an input channel
 - `/add-slack` - Add Slack as an input channel
-- `/add-discord` - Add Discord as an input channel
 - `/add-sms` - Add SMS via Twilio or similar
-- `/convert-to-telegram` - Replace WhatsApp with Telegram entirely
 
 ### Container Runtime
 The project uses Docker by default (cross-platform). For macOS users who prefer Apple Container:

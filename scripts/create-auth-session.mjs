@@ -18,14 +18,78 @@ import path from 'path';
 import os from 'os';
 
 const PLATFORMS = {
-  x:        { url: 'https://x.com/login',               done: '**/home'         },
-  linkedin: { url: 'https://www.linkedin.com/login',     done: '**/feed'         },
-  threads:  { url: 'https://www.threads.net/login',      done: '**threads.net/*' },
-  reddit:   { url: 'https://www.reddit.com/login',       done: '**/reddit.com/*' },
+  x: {
+    url: 'https://x.com',
+    done: 'https://x.com/home**',
+    invalidUrlParts: ['/login', '/i/flow'],
+  },
+  linkedin: {
+    url: 'https://www.linkedin.com/login',
+    done: '**/feed',
+  },
+  threads: {
+    url: 'https://www.threads.com/login',
+    invalidUrlParts: ['/login', '/accounts/login', '/accounts'],
+    requiredSelectors: ['[role="region"]', '[role="menu"]'],
+  },
+  reddit: {
+    url: 'https://www.reddit.com/login',
+    done: '**/reddit.com/*',
+  },
 };
 
 const AUTH_DIR = path.join(os.homedir(), '.nanoclaw', 'auth');
 const PROFILE_DIR = path.join(os.homedir(), '.nanoclaw', '.browser-profile');
+const LOGIN_TIMEOUT_MS = 300_000;
+const LOGIN_POLL_MS = 2_000;
+
+function containsAny(text, snippets = []) {
+  return snippets.some((snippet) => text.includes(snippet));
+}
+
+async function waitForLoginCompletion(page, platformConfig = {}) {
+  const {
+    done: donePattern,
+    invalidUrlParts = [],
+    requiredSelectors = [],
+  } = platformConfig;
+
+  if (requiredSelectors.length > 0) {
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const currentUrl = page.url();
+      if (!containsAny(currentUrl, invalidUrlParts)) {
+        const hasRequiredUi = await page.evaluate((selectors) => {
+          return selectors.every((selector) => Boolean(document.querySelector(selector)));
+        }, requiredSelectors);
+
+        if (hasRequiredUi) {
+          return true;
+        }
+      }
+      await page.waitForTimeout(LOGIN_POLL_MS);
+    }
+    return false;
+  }
+
+  if (donePattern) {
+    await page.waitForURL(donePattern, { timeout: LOGIN_TIMEOUT_MS });
+    return !containsAny(page.url(), invalidUrlParts);
+  }
+
+  if (invalidUrlParts.length > 0) {
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!containsAny(page.url(), invalidUrlParts)) {
+        return true;
+      }
+      await page.waitForTimeout(LOGIN_POLL_MS);
+    }
+    return false;
+  }
+
+  return false;
+}
 
 function usage() {
   console.log(`
@@ -46,17 +110,16 @@ async function main() {
   if (args.length === 0) usage();
 
   let platform = args[0];
-  let loginUrl, donePattern, sessionName;
+  let loginUrl, sessionName, platformConfig = null;
 
   if (PLATFORMS[platform]) {
-    loginUrl = PLATFORMS[platform].url;
-    donePattern = PLATFORMS[platform].done;
+    platformConfig = PLATFORMS[platform];
+    loginUrl = platformConfig.url;
     sessionName = platform;
   } else if (platform.startsWith('http')) {
     loginUrl = platform;
     const nameIdx = args.indexOf('--name');
     sessionName = nameIdx !== -1 ? args[nameIdx + 1] : 'custom';
-    donePattern = null;
   } else {
     console.error(`Unknown platform: ${platform}`);
     usage();
@@ -83,12 +146,22 @@ async function main() {
   const page = context.pages()[0] || await context.newPage();
   await page.goto(loginUrl);
 
-  if (donePattern) {
-    console.log(`Waiting for login to complete (detecting redirect to ${donePattern})...`);
-    console.log(`Or just close the browser when you're logged in.\n`);
+  if (platformConfig) {
+    if (platformConfig.requiredSelectors?.length > 0) {
+      console.log('Waiting for login to complete (detecting Threads home UI)...');
+    } else if (platformConfig.done) {
+      console.log(`Waiting for login to complete (detecting redirect to ${platformConfig.done})...`);
+    } else {
+      console.log('Waiting for login to complete...');
+    }
+    console.log("Or just close the browser when you're logged in.\n");
     try {
-      await page.waitForURL(donePattern, { timeout: 300_000 }); // 5 min
-      console.log('Login detected! Saving session...');
+      const detected = await waitForLoginCompletion(page, platformConfig);
+      if (detected) {
+        console.log('Login detected! Saving session...');
+      } else {
+        console.log('Timeout or browser closed. Saving current state...');
+      }
     } catch {
       // User may have closed browser or URL pattern didn't match
       // Try to save whatever state exists
