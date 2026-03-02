@@ -37,7 +37,9 @@ Approval keywords (case-insensitive): approve/ok/go/yes/lgtm → approve; reject
 
 ## Browser Automation
 
-When browsing the web, use Actionbook (`actionbook`) for efficient, reliable browser operations. It provides pre-computed action manuals for websites, reducing token usage and improving accuracy versus raw HTML parsing. Run `actionbook` in your sandbox to access it.
+When browsing the web, use Actionbook (`actionbook`) for efficient, reliable browser operations. It provides pre-computed action manuals for websites, reducing token usage (~100x) and improving speed (~10x) versus raw HTML parsing. Pre-installed in your container.
+
+Reference: https://github.com/actionbook/actionbook
 
 ## Admin Privileges
 

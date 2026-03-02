@@ -45,8 +45,8 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Install agent-browser, actionbook, and claude-code globally
+RUN npm install -g agent-browser actionbook @anthropic-ai/claude-code
 
 # Install PM agent helper scripts
 COPY skills/github-issues/list-issues /usr/local/bin/list-issues
