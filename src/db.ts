@@ -14,8 +14,7 @@ const MAIN_FOLDER = 'main';
 const PM_AUTORAG_CHANNEL_JID = 'slack:C09RELR4R9N';
 const PM_AUTORAG_FOLDER = 'pm-autorag';
 const MARKETER_FOLDER = 'marketer';
-const MARKETER_DEDICATED_CHANNEL_JID = 'slack:C09MARKETER';
-const MARKETER_SHARED_CHANNEL_JID = 'slack:C09DBMARKET';
+const MARKETER_CHANNEL_JID = 'slack:C0AJ9U1DB25';
 const TODOMON_CHANNEL_JID = 'slack:C0AH3SVQL4C';
 const TODOMON_FOLDER = 'todomon';
 
@@ -84,7 +83,8 @@ function ensurePmAutoragRegistration(): void {
 }
 
 function ensureMarketerRegistration(): void {
-  ensureDefaultRegisteredGroup(MARKETER_DEDICATED_CHANNEL_JID, {
+  // Marketer: responds to all messages in its channel
+  ensureDefaultRegisteredGroup(MARKETER_CHANNEL_JID, {
     name: 'Marketer',
     folder: MARKETER_FOLDER,
     trigger: '@marketer',
@@ -95,14 +95,15 @@ function ensureMarketerRegistration(): void {
     },
   });
 
-  ensureDefaultRegisteredGroup(MARKETER_SHARED_CHANNEL_JID, {
-    name: 'Marketer',
-    folder: MARKETER_FOLDER,
-    trigger: '@marketer',
+  // Dobby also present in marketer channel (responds when @mentioned)
+  ensureDefaultRegisteredGroup(MARKETER_CHANNEL_JID, {
+    name: ASSISTANT_NAME,
+    folder: MAIN_FOLDER,
+    trigger: `@${ASSISTANT_NAME}`,
     requiresTrigger: true,
-    role: 'marketer',
+    role: 'main',
     containerConfig: {
-      model: 'claude-sonnet-4-6',
+      model: 'claude-opus-4-6',
     },
   });
 }

@@ -430,28 +430,26 @@ describe('registered_groups multi-channel lookups', () => {
 });
 
 describe('default agent registrations', () => {
-  it('registers marketer in dedicated and shared channels with expected trigger behavior', () => {
+  it('registers marketer and dobby in the same channel with expected trigger behavior', () => {
     _ensureDefaultAgentRegistrationsForTests();
 
     const channels = getChannelsForAgent('marketer');
-    expect(channels).toHaveLength(2);
+    expect(channels).toHaveLength(1);
 
-    const marketerRows = channels
-      .map((jid) => ({
-        jid,
-        group: getAgentsByChannel(jid).find((g) => g.folder === 'marketer'),
-      }))
-      .filter((row): row is { jid: string; group: NonNullable<typeof row.group> } => Boolean(row.group));
+    const marketerChannel = channels[0];
+    const agentsInChannel = getAgentsByChannel(marketerChannel);
 
-    expect(marketerRows).toHaveLength(2);
+    // Marketer: no trigger required (responds to all messages)
+    const marketer = agentsInChannel.find((g) => g.folder === 'marketer');
+    expect(marketer).toBeDefined();
+    expect(marketer!.requiresTrigger).toBe(false);
+    expect(marketer!.role).toBe('marketer');
 
-    const dedicated = marketerRows.find((row) => row.group.requiresTrigger === false);
-    expect(dedicated).toBeDefined();
-    expect(dedicated!.group.role).toBe('marketer');
-
-    const shared = marketerRows.find((row) => row.group.requiresTrigger === true);
-    expect(shared).toBeDefined();
-    expect(shared!.group.trigger).toBe('@marketer');
+    // Dobby: requires trigger (responds only when @mentioned)
+    const dobby = agentsInChannel.find((g) => g.folder === 'main');
+    expect(dobby).toBeDefined();
+    expect(dobby!.requiresTrigger).toBe(true);
+    expect(dobby!.role).toBe('main');
   });
 });
 
