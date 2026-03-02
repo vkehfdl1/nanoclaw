@@ -35,12 +35,6 @@ Approval keywords (case-insensitive): approve/ok/go/yes/lgtm → approve; reject
 - Format escalations for the user in Slack; wait for direction before relaying back.
 - Direct PM agents to implement issues, review PRs, or summarize activity.
 
-## Browser Automation
-
-When browsing the web, use Actionbook (`actionbook`) for efficient, reliable browser operations. It provides pre-computed action manuals for websites, reducing token usage (~100x) and improving speed (~10x) versus raw HTML parsing. Pre-installed in your container.
-
-Reference: https://github.com/actionbook/actionbook
-
 ## Admin Privileges
 
 | Container Path | Host Path | Access |

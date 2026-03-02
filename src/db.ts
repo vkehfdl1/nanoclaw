@@ -14,6 +14,8 @@ const PM_AUTORAG_FOLDER = 'pm-autorag';
 const MARKETER_FOLDER = 'marketer';
 const MARKETER_DEDICATED_CHANNEL_JID = 'slack:C09MARKETER';
 const MARKETER_SHARED_CHANNEL_JID = 'slack:C09DBMARKET';
+const TODOMON_CHANNEL_JID = 'slack:C09TODOMON'; // TODO: replace with actual channel JID
+const TODOMON_FOLDER = 'todomon';
 
 function ensureDefaultRegisteredGroup(
   jid: string,
@@ -83,9 +85,20 @@ function ensureMarketerRegistration(): void {
   });
 }
 
+function ensureTodomonRegistration(): void {
+  ensureDefaultRegisteredGroup(TODOMON_CHANNEL_JID, {
+    name: 'Todomon',
+    folder: TODOMON_FOLDER,
+    trigger: '@todomon',
+    requiresTrigger: false,
+    role: 'todomon',
+  });
+}
+
 function ensureDefaultAgentRegistrations(): void {
   ensurePmAutoragRegistration();
   ensureMarketerRegistration();
+  ensureTodomonRegistration();
 }
 
 function createSchema(database: Database.Database): void {

@@ -20,6 +20,12 @@ Outbound messages are auto-converted to Slack mrkdwn. Write naturally; bold, hea
 
 Use `conversations/` for session recall. Split files > 500 lines. Keep a lightweight index.
 
+## Browser Automation
+
+Use Actionbook (`actionbook`) for efficient browser operations — pre-computed action manuals reduce token usage and improve reliability. Pre-installed in all containers. Reference: https://github.com/actionbook/actionbook
+
+For login-required sites, use `agent-browser state save <file>` after authenticating and `agent-browser state load <file>` to restore sessions.
+
 ## Sub-agents
 
 Define reusable sub-agents in `/workspace/group/.nanoclaw/subagents.json`.

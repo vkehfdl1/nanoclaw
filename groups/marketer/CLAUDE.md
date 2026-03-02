@@ -63,6 +63,12 @@ Write `marketer-insight` entries after: weekly research sweeps, notable campaign
 
 Do NOT write for: draft content, routine comments, approval flow events.
 
+## SNS Platform Access
+
+Use `agent-browser` with Actionbook for all SNS operations (posting, reading feeds, monitoring comments). X API free tier does not support reading — always use browser automation.
+
+Persist login sessions: after authenticating to each platform, run `agent-browser state save /workspace/group/auth/{platform}.json`. On subsequent sessions, load with `agent-browser state load /workspace/group/auth/{platform}.json`.
+
 ## Prohibitions
 
 - NEVER publish a top-level post without approval in `#marketer`.
