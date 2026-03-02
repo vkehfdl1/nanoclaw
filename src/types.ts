@@ -55,6 +55,13 @@ export interface RegisteredGroup {
   role?: string;
 }
 
+export interface ChannelMember {
+  userId: string;
+  displayName: string;
+  isBot: boolean;
+  agentRole?: string;
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;

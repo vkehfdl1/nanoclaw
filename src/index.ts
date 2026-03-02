@@ -40,6 +40,7 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { bootstrapAllAgentSchedules } from './agent-schedule-bootstrap.js';
 import { startIpcWatcher } from './ipc.js';
+import { prependChannelMembersToPrompt } from './channel-members.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -268,7 +269,11 @@ async function processGroupMessages(
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages);
+  const prompt = await prependChannelMembersToPrompt(
+    chatJid,
+    formatMessages(missedMessages),
+    SLACK_BOT_TOKEN,
+  );
   const activeThreadTs = missedMessages[missedMessages.length - 1]?.thread_ts;
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -530,7 +535,11 @@ async function startMessageLoop(): Promise<void> {
             );
             const messagesToSend =
               allPending.length > 0 ? allPending : groupMessages;
-            const formatted = formatMessages(messagesToSend);
+            const formatted = await prependChannelMembersToPrompt(
+              chatJid,
+              formatMessages(messagesToSend),
+              SLACK_BOT_TOKEN,
+            );
 
             if (queue.sendMessage(agentFolder, chatJid, formatted)) {
               logger.debug(

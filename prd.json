@@ -44,7 +44,7 @@
         "REQ-014: Cross-agent messages include the sender agent name in the content prefix (e.g., `[from @marketer]`) so the receiving agent knows who sent it."
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -58,7 +58,7 @@
         "REQ-018: For agents in multiple channels, the preamble lists members for the channel the current message came from."
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
