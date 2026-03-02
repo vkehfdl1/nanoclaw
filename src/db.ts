@@ -69,14 +69,15 @@ function createSchema(database: Database.Database): void {
       session_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
-      jid TEXT PRIMARY KEY,
+      jid TEXT NOT NULL,
       name TEXT NOT NULL,
       folder TEXT NOT NULL,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1,
-      role TEXT
+      role TEXT,
+      PRIMARY KEY (jid, folder)
     );
   `);
 
@@ -137,8 +138,10 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Remove legacy UNIQUE constraint on folder so one agent folder can be
-  // registered to multiple channels.
+  // Normalize registered_groups schema for multi-agent routing:
+  // - allow multiple agents per channel (jid no longer primary key)
+  // - allow one agent folder in multiple channels (no UNIQUE on folder)
+  // - keep one row per (jid, folder)
   try {
     const tableSql = database
       .prepare(
@@ -146,20 +149,28 @@ function createSchema(database: Database.Database): void {
       )
       .get() as { sql: string } | undefined;
 
-    if (tableSql?.sql && /\bfolder\s+TEXT\s+NOT\s+NULL\s+UNIQUE\b/i.test(tableSql.sql)) {
+    const sql = tableSql?.sql ?? '';
+    const hasCompositePk = /\bPRIMARY\s+KEY\s*\(\s*jid\s*,\s*folder\s*\)/i.test(sql);
+    const hasLegacyJidPk = /\bjid\s+TEXT\s+PRIMARY\s+KEY\b/i.test(sql);
+    const hasFolderUnique =
+      /\bfolder\s+TEXT\s+NOT\s+NULL\s+UNIQUE\b/i.test(sql) ||
+      /\bUNIQUE\s*\(\s*folder\s*\)/i.test(sql);
+
+    if (sql && (!hasCompositePk || hasLegacyJidPk || hasFolderUnique)) {
       database.exec(`
         BEGIN TRANSACTION;
         CREATE TABLE registered_groups_v2 (
-          jid TEXT PRIMARY KEY,
+          jid TEXT NOT NULL,
           name TEXT NOT NULL,
           folder TEXT NOT NULL,
           trigger_pattern TEXT NOT NULL,
           added_at TEXT NOT NULL,
           container_config TEXT,
           requires_trigger INTEGER DEFAULT 1,
-          role TEXT
+          role TEXT,
+          PRIMARY KEY (jid, folder)
         );
-        INSERT INTO registered_groups_v2 (
+        INSERT OR REPLACE INTO registered_groups_v2 (
           jid,
           name,
           folder,
@@ -178,12 +189,13 @@ function createSchema(database: Database.Database): void {
           container_config,
           requires_trigger,
           role
-        FROM registered_groups;
+        FROM registered_groups
+        ORDER BY added_at, folder;
         DROP TABLE registered_groups;
         ALTER TABLE registered_groups_v2 RENAME TO registered_groups;
         COMMIT;
       `);
-      logger.info('Migrated registered_groups schema to remove folder uniqueness');
+      logger.info('Migrated registered_groups schema to composite (jid, folder) key');
     }
   } catch (err) {
     try {
@@ -193,10 +205,14 @@ function createSchema(database: Database.Database): void {
     }
     logger.error(
       { err },
-      'Failed to migrate registered_groups schema (folder UNIQUE removal)',
+      'Failed to migrate registered_groups schema',
     );
     throw err;
   }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_registered_groups_folder ON registered_groups(folder);
+  `);
 }
 
 export function initDatabase(): void {
@@ -634,7 +650,9 @@ export function getRegisteredGroup(
   jid: string,
 ): (RegisteredGroup & { jid: string }) | undefined {
   const row = db
-    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
+    .prepare(
+      `SELECT * FROM registered_groups WHERE jid = ? ORDER BY added_at DESC, folder LIMIT 1`,
+    )
     .get(jid) as RegisteredGroupRow | undefined;
   if (!row) return undefined;
   return mapRegisteredGroupRow(row);
@@ -648,8 +666,15 @@ export function setRegisteredGroup(
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(jid, folder) DO UPDATE SET
+       name = excluded.name,
+       trigger_pattern = excluded.trigger_pattern,
+       added_at = excluded.added_at,
+       container_config = excluded.container_config,
+       requires_trigger = excluded.requires_trigger,
+       role = excluded.role`,
   ).run(
     jid,
     group.name,
@@ -664,7 +689,7 @@ export function setRegisteredGroup(
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   const rows = db
-    .prepare('SELECT * FROM registered_groups')
+    .prepare('SELECT * FROM registered_groups ORDER BY jid, added_at, folder')
     .all() as RegisteredGroupRow[];
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -680,7 +705,9 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
 
 export function getAgentsByChannel(jid: string): RegisteredGroup[] {
   const rows = db
-    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
+    .prepare(
+      'SELECT * FROM registered_groups WHERE jid = ? ORDER BY added_at, folder',
+    )
     .all(jid) as RegisteredGroupRow[];
 
   const groups: RegisteredGroup[] = [];
@@ -695,7 +722,9 @@ export function getAgentsByChannel(jid: string): RegisteredGroup[] {
 
 export function getChannelsForAgent(folder: string): string[] {
   const rows = db
-    .prepare('SELECT jid FROM registered_groups WHERE folder = ? ORDER BY jid')
+    .prepare(
+      'SELECT DISTINCT jid FROM registered_groups WHERE folder = ? ORDER BY jid',
+    )
     .all(folder) as Array<{ jid: string }>;
   return rows.map((row) => row.jid);
 }

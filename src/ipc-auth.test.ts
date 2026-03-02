@@ -600,6 +600,26 @@ describe('register_group success', () => {
     expect(group!.trigger).toBe('@Andy');
   });
 
+  it('register_group passes role through to registration handler', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'pm@g.us',
+        name: 'PM Agent',
+        folder: 'pm-agent',
+        trigger: '@pm',
+        role: 'pm-agent',
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    const group = getRegisteredGroup('pm@g.us');
+    expect(group).toBeDefined();
+    expect(group!.role).toBe('pm-agent');
+  });
+
   it('register_group rejects request with missing fields', async () => {
     await processTaskIpc(
       {

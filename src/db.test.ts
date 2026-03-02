@@ -330,11 +330,57 @@ describe('registered_groups multi-channel lookups', () => {
       added_at: '2024-01-01T00:00:00.000Z',
       role: 'pm-agent',
     });
+    setRegisteredGroup('slack:C111', {
+      name: 'Marketer',
+      folder: 'marketer',
+      trigger: '@marketer',
+      added_at: '2024-01-01T00:00:01.000Z',
+      role: 'marketer',
+    });
 
     const agents = getAgentsByChannel('slack:C111');
-    expect(agents).toHaveLength(1);
-    expect(agents[0].folder).toBe('pm-autorag');
-    expect(agents[0].role).toBe('pm-agent');
+    expect(agents).toHaveLength(2);
+    expect(agents.map((a) => a.folder)).toEqual(['pm-autorag', 'marketer']);
+    expect(agents.map((a) => a.role)).toEqual(['pm-agent', 'marketer']);
+  });
+
+  it('upserts by (jid, folder) without dropping other channel agents', () => {
+    setRegisteredGroup('slack:C111', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:00.000Z',
+      role: 'pm-agent',
+    });
+    setRegisteredGroup('slack:C111', {
+      name: 'Marketer',
+      folder: 'marketer',
+      trigger: '@marketer',
+      added_at: '2024-01-01T00:00:01.000Z',
+      role: 'marketer',
+    });
+
+    // Update only the PM registration row for this channel
+    setRegisteredGroup('slack:C111', {
+      name: 'Young-gu',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:02.000Z',
+      role: 'pm-agent',
+      requiresTrigger: false,
+    });
+
+    const agents = getAgentsByChannel('slack:C111');
+    expect(agents).toHaveLength(2);
+    expect(agents.map((a) => a.folder)).toEqual(['marketer', 'pm-autorag']);
+
+    const pm = agents.find((a) => a.folder === 'pm-autorag');
+    const marketer = agents.find((a) => a.folder === 'marketer');
+    expect(pm).toBeDefined();
+    expect(pm!.name).toBe('Young-gu');
+    expect(pm!.requiresTrigger).toBe(false);
+    expect(marketer).toBeDefined();
+    expect(marketer!.name).toBe('Marketer');
   });
 });
 

@@ -243,6 +243,14 @@ function buildContainerArgs(
     args.push('-e', `GITHUB_TOKEN=${extraEnv.GITHUB_TOKEN}`);
   }
 
+  // Per-group environment variables (e.g., GITHUB_REPO, SLACK_CHANNEL_ID for PM agents).
+  // These are injected directly — do not put secrets here; use .env for secrets.
+  if (group.containerConfig?.envVars) {
+    for (const [key, value] of Object.entries(group.containerConfig.envVars)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
   // or when getuid is unavailable (native Windows without WSL).

@@ -8,6 +8,11 @@ import { updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import { formatOutbound } from '../router.js';
 import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
+import {
+  extractPmMentionContext,
+  formatPmMentionContent,
+  isPmAgentGroup,
+} from './slack-pm-mention.js';
 
 export interface SlackChannelOpts {
   onMessage: OnInboundMessage;
@@ -24,6 +29,17 @@ export class SlackChannel implements Channel {
   private connected = false;
   private botUserId = '';
   private opts: SlackChannelOpts;
+
+  /**
+   * Tracks the Slack thread_ts to reply into for each chatJid.
+   * Updated whenever a message or @mention arrives from a registered group:
+   *   - If the event is already in a thread, use its thread_ts (reply in same thread)
+   *   - If it's a top-level message, use its ts (start a new reply thread)
+   *
+   * This ensures PM agent responses always go back into the originating thread.
+   * `sendMessage` reads from this map automatically, so no callers need to change.
+   */
+  private activeThreadTs = new Map<string, string>();
 
   constructor(opts: SlackChannelOpts) {
     this.opts = opts;
@@ -78,6 +94,18 @@ export class SlackChannel implements Channel {
       // Only deliver full messages for registered groups
       const groups = this.opts.registeredGroups();
       if (!groups[chatJid]) return;
+
+      // For PM agent channels: if the message @mentions the bot, skip it here.
+      // The app_mention handler fires separately and will extract richer context
+      // (thread history, channel history) before storing the message.
+      const rawText = ('text' in message ? message.text : '') || '';
+      if (
+        isPmAgentGroup(groups[chatJid]) &&
+        this.botUserId &&
+        rawText.includes(`<@${this.botUserId}>`)
+      ) {
+        return;
+      }
 
       // Resolve sender display name
       const userId = ('user' in message ? message.user : undefined) || 'unknown';
@@ -139,6 +167,20 @@ export class SlackChannel implements Channel {
 
       const fromMe = userId === this.botUserId;
 
+      // Determine which thread_ts to track for reply-in-thread:
+      //   - If the message is already in a thread (thread_ts set), reply there
+      //   - Otherwise use message.ts to start a new thread from this message
+      const threadTs =
+        'thread_ts' in message && typeof message.thread_ts === 'string'
+          ? message.thread_ts
+          : message.ts;
+
+      // Update the active thread for this channel so sendMessage() can reply in-thread
+      if (!fromMe) {
+        this.activeThreadTs.set(chatJid, threadTs);
+        logger.debug({ chatJid, threadTs }, 'Active thread updated from message');
+      }
+
       this.opts.onMessage(chatJid, {
         id: message.ts,
         chat_jid: chatJid,
@@ -148,10 +190,13 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: fromMe,
         is_bot_message: fromMe,
+        thread_ts: threadTs,
       });
     });
 
-    // Also listen for app_mention events (when someone @mentions the bot)
+    // Listen for app_mention events (when someone @mentions the bot).
+    // For PM agent channels this handler extracts rich conversation context
+    // (thread history or recent channel messages) before storing the message.
     this.app.event('app_mention', async ({ event, client }) => {
       const channelId = event.channel;
       const chatJid = `slack:${channelId}`;
@@ -164,7 +209,85 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[chatJid]) return;
 
+      const group = groups[chatJid];
       const userId = event.user || 'unknown';
+
+      // Determine thread tracking:
+      //   - If the @mention is in an existing thread (thread_ts set), reply there
+      //   - Otherwise use event.ts to start a new thread from this mention
+      const mentionThreadTs =
+        'thread_ts' in event && typeof event.thread_ts === 'string'
+          ? event.thread_ts
+          : event.ts;
+
+      // Update the active thread so sendMessage() replies in the correct thread
+      this.activeThreadTs.set(chatJid, mentionThreadTs);
+
+      // -----------------------------------------------------------------------
+      // PM agent channel: extract rich @mention context for the agent prompt.
+      // -----------------------------------------------------------------------
+      if (isPmAgentGroup(group)) {
+        try {
+          const ctx = await extractPmMentionContext({
+            text: event.text,
+            userId,
+            channelId,
+            ts: event.ts,
+            threadTs:
+              'thread_ts' in event && typeof event.thread_ts === 'string'
+                ? event.thread_ts
+                : undefined,
+            client,
+            botUserId: this.botUserId,
+          });
+
+          const content = formatPmMentionContent(ctx);
+
+          logger.info(
+            {
+              chatJid,
+              senderName: ctx.senderName,
+              isInThread: ctx.isInThread,
+              contextMessages: ctx.recentMessages.length,
+            },
+            '[pm-mention] @mention received with context',
+          );
+
+          this.opts.onMessage(chatJid, {
+            id: event.ts,
+            chat_jid: chatJid,
+            sender: userId,
+            sender_name: ctx.senderName,
+            content,
+            timestamp,
+            is_from_me: false,
+            is_bot_message: false,
+            thread_ts: mentionThreadTs,
+          });
+        } catch (err) {
+          // Fallback to plain text if context extraction fails
+          logger.error(
+            { chatJid, err },
+            '[pm-mention] Context extraction failed, falling back to plain text',
+          );
+          this.opts.onMessage(chatJid, {
+            id: event.ts,
+            chat_jid: chatJid,
+            sender: userId,
+            sender_name: userId,
+            content: event.text,
+            timestamp,
+            is_from_me: false,
+            is_bot_message: false,
+            thread_ts: mentionThreadTs,
+          });
+        }
+        return;
+      }
+
+      // -----------------------------------------------------------------------
+      // Non-PM agent channel: standard @mention handling (resolve name only).
+      // -----------------------------------------------------------------------
       let senderName: string = userId;
       try {
         const userInfo = await client.users.info({ user: userId });
@@ -177,6 +300,8 @@ export class SlackChannel implements Channel {
         // Fall back to user ID
       }
 
+      logger.debug({ chatJid, mentionThreadTs }, 'Active thread updated from @mention');
+
       this.opts.onMessage(chatJid, {
         id: event.ts,
         chat_jid: chatJid,
@@ -186,6 +311,7 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: false,
         is_bot_message: false,
+        thread_ts: mentionThreadTs,
       });
     });
 
@@ -197,22 +323,55 @@ export class SlackChannel implements Channel {
     await this.syncChannels();
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  /**
+   * Send a message to a Slack channel, automatically replying in-thread
+   * when we have a tracked active thread for that channel.
+   *
+   * The `threadTs` parameter allows callers to explicitly target a thread,
+   * overriding the auto-tracked one. If neither is provided, the message
+   * goes to the top level (no thread).
+   */
+  async sendMessage(jid: string, text: string, threadTs?: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
     const assistantLabel = this.getAssistantLabel(jid);
     const outbound = formatOutbound(text);
     if (!outbound) return;
+
+    // Use the explicitly provided threadTs, fall back to the auto-tracked active thread
+    const replyThreadTs = threadTs ?? this.activeThreadTs.get(jid);
+
     try {
       await this.app.client.chat.postMessage({
         channel: channelId,
         text: `*${assistantLabel}:* ${outbound}`,
         // Use mrkdwn so the bot name is bold
         mrkdwn: true,
+        // Reply in-thread when we have a tracked thread (PM agent replies go into thread)
+        ...(replyThreadTs ? { thread_ts: replyThreadTs } : {}),
       });
-      logger.info({ jid, length: outbound.length }, 'Slack message sent');
+      logger.info(
+        { jid, length: outbound.length, inThread: !!replyThreadTs },
+        'Slack message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Slack message');
     }
+  }
+
+  /**
+   * Explicitly post a reply into a specific Slack thread.
+   * Use when the thread_ts is known and you don't want to rely on auto-tracking.
+   */
+  async sendMessageInThread(jid: string, text: string, threadTs: string): Promise<void> {
+    return this.sendMessage(jid, text, threadTs);
+  }
+
+  /**
+   * Return the currently-tracked thread_ts for a given chatJid, if any.
+   * Useful for tests and for agents that need to know the active thread.
+   */
+  getActiveThreadTs(jid: string): string | undefined {
+    return this.activeThreadTs.get(jid);
   }
 
   isConnected(): boolean {
