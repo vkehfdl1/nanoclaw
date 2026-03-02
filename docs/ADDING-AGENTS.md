@@ -192,20 +192,39 @@ ensureDefaultRegisteredGroup('slack:C09SHARED', {
 
 Agents cannot log into platforms themselves — the **user** must provide authenticated sessions.
 
-To set up a session, run a one-time interactive container session:
+#### Creating sessions
+
+Use the helper script. It opens your **real Chrome browser** (not Playwright's Chromium) so sites like X and Reddit don't flag it as an automation browser:
 
 ```bash
-# Start an interactive agent-browser session
-docker run -it --rm -v ~/.nanoclaw/auth:/auth nanoclaw-agent:latest bash
+# First time only: install Playwright
+npx playwright install chrome
 
-# Inside the container:
-agent-browser open https://x.com/login
-agent-browser snapshot -i
-# Manually fill in credentials...
-agent-browser state save /auth/x.json
+# Then create sessions — a Chrome window opens, log in normally, close when done
+node scripts/create-auth-session.mjs x
+node scripts/create-auth-session.mjs linkedin
+node scripts/create-auth-session.mjs threads
+node scripts/create-auth-session.mjs reddit
 ```
 
-Then mount the auth directory for the agent:
+Sessions are saved to `~/.nanoclaw/auth/<platform>.json`.
+
+Key details:
+- Uses system Chrome with a persistent profile (bypasses automation detection)
+- The `--enable-automation` flag is suppressed to avoid the "Chrome is being controlled" banner
+- You log in with your real mouse/keyboard — no passwords in the terminal
+- The script auto-detects successful login via URL redirect
+- Re-run the same command to refresh an expired session
+
+#### Custom sites
+
+```bash
+node scripts/create-auth-session.mjs https://example.com/login --name mysite
+```
+
+#### Mounting for agents
+
+Add the auth directory to `containerConfig.additionalMounts` (already configured for Marketer):
 
 ```typescript
 containerConfig: {
@@ -219,7 +238,7 @@ containerConfig: {
 
 The agent loads sessions on startup: `agent-browser state load /workspace/extra/auth/x.json`
 
-If a session expires, the agent will ask the user (via Dobby) to re-authenticate.
+If a session expires, the agent asks the user (via Dobby) to re-authenticate.
 
 ## Agent Checklist
 
