@@ -15,6 +15,7 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
+  SECONDBRAIN_DIR: '/tmp/nanoclaw-test-secondbrain',
   TIMEZONE: 'America/Los_Angeles',
 }));
 

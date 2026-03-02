@@ -14,6 +14,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  SECONDBRAIN_DIR,
   TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
@@ -215,6 +216,14 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
+    readonly: false,
+  });
+
+  // SecondBrain shared knowledge base (read-write for all agents)
+  fs.mkdirSync(path.join(SECONDBRAIN_DIR, 'inbox'), { recursive: true });
+  mounts.push({
+    hostPath: SECONDBRAIN_DIR,
+    containerPath: '/workspace/secondbrain',
     readonly: false,
   });
 

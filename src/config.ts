@@ -50,6 +50,11 @@ export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const HOST_REPOS_DIR = path.resolve(expandHomePath(REPOS_BASE_DIR));
+export const SECONDBRAIN_DIR = path.resolve(
+  expandHomePath(
+    process.env.NANOCLAW_SECONDBRAIN_DIR || '~/.nanoclaw/secondbrain',
+  ),
+);
 export const MAIN_GROUP_FOLDER = 'main';
 
 export const CONTAINER_IMAGE =
