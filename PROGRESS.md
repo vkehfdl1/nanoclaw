@@ -32,3 +32,10 @@
 - Title: PM agent registration and CLAUDE.md
 - Attempts: 1
 
+## US-007 — PASS (2026-03-02T03:57:51Z)
+- Title: PM GitHub issue polling and triage
+- Attempts: 1
+
+## US-008 — PASS (2026-03-02T04:01:41Z)
+- Title: PM Codex integration for implementation
+- Attempts: 1

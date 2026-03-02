@@ -122,7 +122,7 @@
         "REQ-060: Before crafting the Codex prompt, PM reads relevant source files from the mounted project code (`/workspace/extra/{repo}/`) to understand existing patterns, dependencies, and architecture. The prompt references these specific patterns so Codex produces consistent code."
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
