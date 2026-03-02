@@ -73,6 +73,14 @@ interface IpcTaskResponse {
   exitCode?: number | null;
 }
 
+interface ParsedGitHubIssue {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+  state: string;
+}
+
 type HostCommandRunner = (
   command: string,
   args: string[],
@@ -286,6 +294,60 @@ function getHostCommandErrorDetails(
     }
   }
   return details;
+}
+
+function parseGitHubIssueListOutput(stdout: string): ParsedGitHubIssue[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (err) {
+    throw new Error(`Invalid JSON: ${getErrorMessage(err)}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('Expected JSON array from gh issue list');
+  }
+
+  return parsed.map((rawIssue, index) => {
+    if (!rawIssue || typeof rawIssue !== 'object') {
+      throw new Error(`Issue ${index + 1} is not an object`);
+    }
+
+    const issue = rawIssue as Record<string, unknown>;
+    const rawNumber = issue.number;
+    if (!Number.isInteger(rawNumber) || Number(rawNumber) <= 0) {
+      throw new Error(`Issue ${index + 1} has invalid number`);
+    }
+
+    const title = typeof issue.title === 'string' ? issue.title.trim() : '';
+    if (!title) {
+      throw new Error(`Issue ${index + 1} is missing title`);
+    }
+
+    const body = typeof issue.body === 'string' ? issue.body : '';
+    const rawState = typeof issue.state === 'string' ? issue.state.trim() : '';
+    const state = rawState ? rawState.toLowerCase() : 'open';
+
+    const labels = Array.isArray(issue.labels)
+      ? issue.labels
+        .map((label) => {
+          if (typeof label === 'string') return label.trim();
+          if (label && typeof label === 'object' && typeof (label as { name?: unknown }).name === 'string') {
+            return (label as { name: string }).name.trim();
+          }
+          return '';
+        })
+        .filter((label) => label.length > 0)
+      : [];
+
+    return {
+      number: Number(rawNumber),
+      title,
+      body,
+      labels,
+      state,
+    };
+  });
 }
 
 async function runCommand(
@@ -1101,11 +1163,21 @@ export async function processTaskIpc(
           ],
           { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
         );
-        writeTaskResponse(sourceGroup, requestId, {
-          ok: true,
-          stdout: result.stdout,
-          stderr: result.stderr || undefined,
-        });
+        try {
+          const issues = parseGitHubIssueListOutput(result.stdout);
+          writeTaskResponse(sourceGroup, requestId, {
+            ok: true,
+            stdout: JSON.stringify(issues, null, 2),
+            stderr: result.stderr || undefined,
+          });
+        } catch (parseErr) {
+          writeTaskResponse(sourceGroup, requestId, {
+            ok: false,
+            error: `Failed to parse gh issue list output: ${getErrorMessage(parseErr)}`,
+            stdout: result.stdout || undefined,
+            stderr: result.stderr || undefined,
+          });
+        }
       } catch (err) {
         const details = getHostCommandErrorDetails(err);
         writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });

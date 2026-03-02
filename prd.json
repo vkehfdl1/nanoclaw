@@ -107,7 +107,7 @@
         "REQ-032: PM writes a SecondBrain insight for each new issue with type `pm-insight`, including issue details and triage decision."
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

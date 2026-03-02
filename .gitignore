@@ -21,6 +21,7 @@ groups/global/*
 groups/pm-autorag/*
 !groups/pm-autorag/CLAUDE.md
 !groups/pm-autorag/schedule.json
+!groups/pm-autorag/seen_issues.json
 
 # Secrets
 *.keys.json

@@ -958,4 +958,141 @@ describe('host repo IPC tasks', () => {
     expect(response.ok).toBe(true);
     expect(response.stdout).toContain('Already up to date.');
   });
+
+  it('gh_issue_list normalizes issues to number/title/body/labels/state', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'issue' && args[1] === 'list') {
+        return {
+          stdout: JSON.stringify([
+            {
+              number: 17,
+              title: 'Improve triage flow',
+              body: 'Need clearer PM issue triage output.',
+              state: 'OPEN',
+              labels: [{ name: 'enhancement' }, { name: 'pm' }],
+              url: 'https://github.com/example/repo/issues/17',
+            },
+            {
+              number: 18,
+              title: 'Issue without body',
+              body: null,
+              state: 'CLOSED',
+              labels: [],
+              url: 'https://github.com/example/repo/issues/18',
+            },
+          ]),
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_list',
+        requestId: 'req-gh-list',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      [
+        'issue',
+        'list',
+        '--state',
+        'open',
+        '--json',
+        'number,title,body,state,labels,url',
+      ],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-list');
+    expect(response.ok).toBe(true);
+    expect(JSON.parse(response.stdout)).toEqual([
+      {
+        number: 17,
+        title: 'Improve triage flow',
+        body: 'Need clearer PM issue triage output.',
+        labels: ['enhancement', 'pm'],
+        state: 'open',
+      },
+      {
+        number: 18,
+        title: 'Issue without body',
+        body: '',
+        labels: [],
+        state: 'closed',
+      },
+    ]);
+  });
+
+  it('gh_issue_list returns an error when gh output is not valid JSON', async () => {
+    configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'issue' && args[1] === 'list') {
+        return { stdout: 'not-json', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_list',
+        requestId: 'req-gh-list-invalid',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const response = readTaskResponse('req-gh-list-invalid');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('Failed to parse gh issue list output');
+  });
+
+  it('gh_issue_comment posts a comment to the requested issue number', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'issue' && args[1] === 'comment') {
+        return { stdout: 'https://github.com/example/repo/issues/17#issuecomment-1', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_comment',
+        requestId: 'req-gh-comment',
+        repo: 'autorag-research',
+        issue_number: 17,
+        body: 'Initial PM triage complete.',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      ['issue', 'comment', '17', '--body', 'Initial PM triage complete.'],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-comment');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('issuecomment');
+  });
 });
