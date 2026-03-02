@@ -77,7 +77,7 @@
         "REQ-057: `buildVolumeMounts()` in `container-runner.ts` generates `--tmpfs` flags for each exclude pattern path under the mount's container path, effectively masking those directories with empty tmpfs. Example: mount at `/workspace/extra/autorag-research:ro` + `--tmpfs /workspace/extra/autorag-research/node_modules`."
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {
@@ -93,7 +93,7 @@
         "REQ-059: `groups/pm-autorag/CLAUDE.md` includes instructions: \"Your project code is mounted read-only at /workspace/extra/autorag-research/. Browse code to understand context before crafting Codex prompts. Use git_pull to sync latest changes from upstream.\""
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

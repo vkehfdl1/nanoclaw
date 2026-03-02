@@ -1,0 +1,16 @@
+{
+  "version": "1",
+  "description": "PM agent periodic issue polling for AutoRAG Research.",
+  "tasks": [
+    {
+      "id": "pm-autorag-issue-poll",
+      "name": "Poll GitHub Issues Every 15 Minutes",
+      "description": "Fetch open issues and process newly seen issues for triage.",
+      "enabled": true,
+      "schedule_type": "cron",
+      "schedule_value": "*/15 * * * *",
+      "context_mode": "group",
+      "prompt": "Run GitHub issue polling for AutoRAG Research.\n\n1. Call gh_issue_list for repo \"autorag-research\" with state \"open\".\n2. Ensure /workspace/group/seen_issues.json exists (create with [] if missing).\n3. Compare current issue numbers with seen_issues.json.\n4. For each new issue:\n   - write a triage summary (scope, risk, missing context, implementation readiness)\n   - post an initial triage comment via gh_issue_comment\n   - write a SecondBrain insight (type: pm-insight) with issue details and triage outcome\n5. Update /workspace/group/seen_issues.json with all currently open issue numbers.\n6. Send a short Slack update summarizing how many new issues were processed."
+    }
+  ]
+}

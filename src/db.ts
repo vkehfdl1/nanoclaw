@@ -9,6 +9,52 @@ import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.
 
 let db: Database.Database;
 
+const PM_AUTORAG_CHANNEL_JID = 'slack:C09RELR4R9N';
+const PM_AUTORAG_FOLDER = 'pm-autorag';
+
+function ensurePmAutoragRegistration(): void {
+  const existing = db
+    .prepare(
+      `SELECT added_at FROM registered_groups WHERE jid = ? AND folder = ? LIMIT 1`,
+    )
+    .get(PM_AUTORAG_CHANNEL_JID, PM_AUTORAG_FOLDER) as
+    | { added_at: string }
+    | undefined;
+
+  const addedAt = existing?.added_at ?? new Date().toISOString();
+
+  setRegisteredGroup(PM_AUTORAG_CHANNEL_JID, {
+    name: 'Young-gu',
+    folder: PM_AUTORAG_FOLDER,
+    trigger: '@young-gu',
+    added_at: addedAt,
+    requiresTrigger: false,
+    role: 'pm-agent',
+    containerConfig: {
+      envVars: {
+        GITHUB_REPO: 'owner/autorag-research',
+        ALLOWED_REPOS: 'autorag-research',
+      },
+      additionalMounts: [
+        {
+          hostPath: '~/.nanoclaw/repos/autorag-research',
+          containerPath: 'autorag-research',
+          readonly: true,
+          excludePatterns: [
+            'node_modules',
+            '.venv',
+            'dist',
+            '.git/objects',
+            '__pycache__',
+            '.mypy_cache',
+            '.pytest_cache',
+          ],
+        },
+      ],
+    },
+  });
+}
+
 function createSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS chats (
@@ -242,6 +288,7 @@ export function initDatabase(): void {
 
   // Migrate from JSON files if they exist
   migrateJsonState();
+  ensurePmAutoragRegistration();
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */

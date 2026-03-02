@@ -17,6 +17,10 @@ groups/main/*
 groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
+!groups/pm-autorag/
+groups/pm-autorag/*
+!groups/pm-autorag/CLAUDE.md
+!groups/pm-autorag/schedule.json
 
 # Secrets
 *.keys.json

@@ -21,3 +21,10 @@
 - Title: Channel member injection into agent prompts
 - Attempts: 1
 
+## US-005 — PASS (2026-03-02T03:40:41Z)
+- Title: Host-side Codex MCP endpoint and mount exclusions
+- Attempts: 1
+
+## US-006 — PASS (2026-03-02T03:48:08Z)
+- Title: PM agent registration and CLAUDE.md
+- Attempts: 1
