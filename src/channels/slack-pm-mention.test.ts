@@ -2,7 +2,7 @@
  * Tests for the PM agent @mention context extraction module.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import {
   extractPmMentionContext,

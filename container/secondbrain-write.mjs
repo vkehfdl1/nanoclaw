@@ -29,7 +29,6 @@ import { join } from 'path';
 
 const INBOX_DIR = '/workspace/secondbrain/inbox';
 const VALID_TYPES = ['slack-summary', 'github-issue', 'github-pr', 'github-review'];
-const VALID_TAGS = ['decision', 'bug', 'feature', 'blocked', 'retro', 'review', 'merged', 'closed', 'triage'];
 
 // ---------- Input reading ----------
 
@@ -94,17 +93,12 @@ function timestamp() {
   return clean.slice(0, 8) + '_' + clean.slice(8, 14);
 }
 
-function yamlList(items) {
-  if (!items || items.length === 0) return '[]';
-  return '\n' + items.map(i => `  - ${i}`).join('\n');
-}
-
 function actionItemsSection(items) {
   if (!items || items.length === 0) return '_None specified_';
   return items.map(i => `- [ ] ${i}`).join('\n');
 }
 
-function buildFrontmatter(input, sourceType) {
+function buildFrontmatter(input) {
   const tags = (input.tags || []).filter(t => typeof t === 'string');
   const tagsYaml = tags.length > 0 ? `\n  - ${tags.join('\n  - ')}` : ' []';
 
@@ -168,7 +162,6 @@ function buildBody(input) {
     }
 
   } else if (input.type === 'github-issue') {
-    const issueRef = input.ref ? `Issue #${input.ref}` : 'Issue';
     sections.push(`## What Happened`);
     sections.push(input.whatHappened);
     sections.push('');

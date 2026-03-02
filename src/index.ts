@@ -396,7 +396,6 @@ async function runAgent(
     group.folder,
     isMain,
     availableGroups,
-    new Set(Object.keys(registeredGroups)),
   );
 
   // Wrap onOutput to track session ID from streamed results
@@ -673,7 +672,7 @@ async function main(): Promise<void> {
       return Promise.resolve();
     },
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot: (gf, im, ag) => writeGroupsSnapshot(gf, im, ag),
     clearSession: (jid, groupFolder) => clearGroupSession(jid, groupFolder),
   });
   queue.setProcessMessagesFn(processGroupMessages);
