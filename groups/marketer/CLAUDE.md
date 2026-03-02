@@ -67,11 +67,13 @@ Do NOT write for: draft content, routine comments, approval flow events.
 
 Use `agent-browser` with Actionbook for all SNS operations (posting, reading feeds, monitoring comments). X API free tier does not support reading — always use browser automation.
 
-Login sessions are set up by the user and saved to `/workspace/group/auth/{platform}.json`. On each session, load the saved state first:
+Login sessions are provisioned by the user and mounted read-only at `/workspace/extra/auth/`. On each session, load the saved state first:
 ```bash
-agent-browser state load /workspace/group/auth/x.json
+agent-browser state load /workspace/extra/auth/x.json
 ```
-If a session file is missing or expired, ask Dobby to request the user to re-authenticate — do NOT attempt to log in with credentials yourself.
+Available session files: `x.json`, `linkedin.json`, `threads.json`, `reddit.json`.
+
+If a session file is missing or expired, ask Dobby to request the user to re-authenticate — NEVER attempt to log in with credentials yourself.
 
 ## Prohibitions
 

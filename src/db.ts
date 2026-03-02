@@ -92,6 +92,13 @@ function ensureMarketerRegistration(): void {
     role: 'marketer',
     containerConfig: {
       model: 'claude-sonnet-4-6',
+      additionalMounts: [
+        {
+          hostPath: '~/.nanoclaw/auth',
+          containerPath: 'auth',
+          readonly: true,
+        },
+      ],
     },
   });
 
