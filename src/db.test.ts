@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
+  _ensureDefaultAgentRegistrationsForTests,
   _initTestDatabase,
   createTask,
   deleteTask,
@@ -425,6 +426,32 @@ describe('registered_groups multi-channel lookups', () => {
     expect(pm!.requiresTrigger).toBe(false);
     expect(marketer).toBeDefined();
     expect(marketer!.name).toBe('Marketer');
+  });
+});
+
+describe('default agent registrations', () => {
+  it('registers marketer in dedicated and shared channels with expected trigger behavior', () => {
+    _ensureDefaultAgentRegistrationsForTests();
+
+    const channels = getChannelsForAgent('marketer');
+    expect(channels).toHaveLength(2);
+
+    const marketerRows = channels
+      .map((jid) => ({
+        jid,
+        group: getAgentsByChannel(jid).find((g) => g.folder === 'marketer'),
+      }))
+      .filter((row): row is { jid: string; group: NonNullable<typeof row.group> } => Boolean(row.group));
+
+    expect(marketerRows).toHaveLength(2);
+
+    const dedicated = marketerRows.find((row) => row.group.requiresTrigger === false);
+    expect(dedicated).toBeDefined();
+    expect(dedicated!.group.role).toBe('marketer');
+
+    const shared = marketerRows.find((row) => row.group.requiresTrigger === true);
+    expect(shared).toBeDefined();
+    expect(shared!.group.trigger).toBe('@marketer');
   });
 });
 

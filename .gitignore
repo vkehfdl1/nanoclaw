@@ -22,6 +22,10 @@ groups/pm-autorag/*
 !groups/pm-autorag/CLAUDE.md
 !groups/pm-autorag/schedule.json
 !groups/pm-autorag/seen_issues.json
+!groups/marketer/
+groups/marketer/**
+!groups/marketer/CLAUDE.md
+!groups/marketer/schedule.json
 
 # Secrets
 *.keys.json

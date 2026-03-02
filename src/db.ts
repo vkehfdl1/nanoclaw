@@ -11,23 +11,33 @@ let db: Database.Database;
 
 const PM_AUTORAG_CHANNEL_JID = 'slack:C09RELR4R9N';
 const PM_AUTORAG_FOLDER = 'pm-autorag';
+const MARKETER_FOLDER = 'marketer';
+const MARKETER_DEDICATED_CHANNEL_JID = 'slack:C09MARKETER';
+const MARKETER_SHARED_CHANNEL_JID = 'slack:C09DBMARKET';
 
-function ensurePmAutoragRegistration(): void {
+function ensureDefaultRegisteredGroup(
+  jid: string,
+  group: Omit<RegisteredGroup, 'added_at'>,
+): void {
   const existing = db
     .prepare(
       `SELECT added_at FROM registered_groups WHERE jid = ? AND folder = ? LIMIT 1`,
     )
-    .get(PM_AUTORAG_CHANNEL_JID, PM_AUTORAG_FOLDER) as
+    .get(jid, group.folder) as
     | { added_at: string }
     | undefined;
 
-  const addedAt = existing?.added_at ?? new Date().toISOString();
+  setRegisteredGroup(jid, {
+    ...group,
+    added_at: existing?.added_at ?? new Date().toISOString(),
+  });
+}
 
-  setRegisteredGroup(PM_AUTORAG_CHANNEL_JID, {
+function ensurePmAutoragRegistration(): void {
+  ensureDefaultRegisteredGroup(PM_AUTORAG_CHANNEL_JID, {
     name: 'Young-gu',
     folder: PM_AUTORAG_FOLDER,
     trigger: '@young-gu',
-    added_at: addedAt,
     requiresTrigger: false,
     role: 'pm-agent',
     containerConfig: {
@@ -53,6 +63,29 @@ function ensurePmAutoragRegistration(): void {
       ],
     },
   });
+}
+
+function ensureMarketerRegistration(): void {
+  ensureDefaultRegisteredGroup(MARKETER_DEDICATED_CHANNEL_JID, {
+    name: 'Marketer',
+    folder: MARKETER_FOLDER,
+    trigger: '@marketer',
+    requiresTrigger: false,
+    role: 'marketer',
+  });
+
+  ensureDefaultRegisteredGroup(MARKETER_SHARED_CHANNEL_JID, {
+    name: 'Marketer',
+    folder: MARKETER_FOLDER,
+    trigger: '@marketer',
+    requiresTrigger: true,
+    role: 'marketer',
+  });
+}
+
+function ensureDefaultAgentRegistrations(): void {
+  ensurePmAutoragRegistration();
+  ensureMarketerRegistration();
 }
 
 function createSchema(database: Database.Database): void {
@@ -288,13 +321,18 @@ export function initDatabase(): void {
 
   // Migrate from JSON files if they exist
   migrateJsonState();
-  ensurePmAutoragRegistration();
+  ensureDefaultAgentRegistrations();
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+/** @internal - for tests only. Seeds default team registrations. */
+export function _ensureDefaultAgentRegistrationsForTests(): void {
+  ensureDefaultAgentRegistrations();
 }
 
 /**
