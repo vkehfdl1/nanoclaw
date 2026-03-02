@@ -10,6 +10,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import { writeInsight, InsightTypeSchema, PrioritySchema } from './secondbrain.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -300,6 +301,75 @@ server.tool(
 );
 
 server.tool(
+  'write_secondbrain_insight',
+  `Write a structured insight or summary to the SecondBrain inbox.
+
+SecondBrain is a shared knowledge store. Drop insights here after:
+- A design decision is made
+- A bug is triaged or resolved
+- A feature is scoped and planned
+- A thread or conversation is summarized
+- Trend research or marketing results are captured
+
+Files are written to /workspace/secondbrain/inbox/ as timestamped Markdown files with YAML frontmatter.
+
+REQUIRED: type, source, title, content
+RECOMMENDED: project, tags
+
+Type values:
+  pm-insight       — PM agent events: decisions, summaries, triage
+  marketer-insight — Marketing: campaign results, trend findings
+  decision         — Architectural or product decision
+  feature          — Feature scope or plan
+  bug              — Bug triage, root cause, resolution
+  blocked          — Stalled work (include why + next steps)
+  retro            — Retrospective or lessons learned
+  summary          — General conversation or session summary
+  note             — Freeform note or observation`,
+  {
+    type: InsightTypeSchema.describe('Type of insight (pm-insight | marketer-insight | decision | feature | bug | blocked | retro | summary | note)'),
+    source: z.string().min(1).describe('Agent writing this entry (e.g. "pm-myproject", "marketer", "dobby")'),
+    title: z.string().min(1).describe('Short descriptive title'),
+    content: z.string().min(1).describe('Main content in Markdown (what happened, key details, context)'),
+    project: z.string().optional().describe('Project name this insight belongs to'),
+    tags: z.array(z.string()).optional().describe('Classification tags, e.g. ["decision", "auth", "api"]'),
+    decisions: z.array(z.string()).optional().describe('Concrete decisions made, if any'),
+    action_items: z.array(z.object({
+      task: z.string().describe('What needs to be done'),
+      owner: z.string().optional().describe('Person or agent responsible'),
+      done: z.boolean().default(false).describe('Whether completed'),
+    })).optional().describe('Follow-up action items'),
+    links: z.array(z.string()).optional().describe('Relevant URLs (GitHub issues, PRs, docs)'),
+    priority: PrioritySchema.describe('Priority: low | medium | high'),
+  },
+  async (args) => {
+    const result = writeInsight({
+      type: args.type,
+      source: args.source,
+      title: args.title,
+      content: args.content,
+      project: args.project,
+      tags: args.tags ?? [],
+      decisions: args.decisions,
+      action_items: args.action_items,
+      links: args.links,
+      priority: args.priority,
+    });
+
+    if (!result.success) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to write SecondBrain insight: ${result.error}` }],
+        isError: true,
+      };
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: `SecondBrain insight written: ${result.filename}` }],
+    };
+  },
+);
+
+server.tool(
   'register_group',
   `Register a new chat/group so the agent can respond there. Main group only.
 
@@ -310,6 +380,7 @@ Use available_groups.json to find the JID for a group. The folder name should be
     folder: z.string().describe('Folder name for group files (lowercase, hyphens, e.g., "family-chat")'),
     trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
     requires_trigger: z.boolean().optional().describe('Whether messages need trigger prefix. Default true. Use false for dedicated channels.'),
+    role: z.string().optional().describe('Optional agent role identifier (e.g., "pm-agent", "marketer")'),
     model: z.string().optional().describe('Optional per-agent model override (e.g., "claude-opus-4-6" or "claude-sonnet-4-6")'),
   },
   async (args) => {
@@ -327,6 +398,7 @@ Use available_groups.json to find the JID for a group. The folder name should be
       folder: args.folder,
       trigger: args.trigger,
       requiresTrigger: args.requires_trigger,
+      role: args.role,
       containerConfig: args.model
         ? { model: args.model }
         : undefined,

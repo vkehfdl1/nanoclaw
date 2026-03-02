@@ -71,11 +71,12 @@ function createSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
+      folder TEXT NOT NULL,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
-      requires_trigger INTEGER DEFAULT 1
+      requires_trigger INTEGER DEFAULT 1,
+      role TEXT
     );
   `);
 
@@ -116,6 +117,85 @@ function createSchema(database: Database.Database): void {
     database.exec(`UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`);
   } catch {
     /* columns already exist */
+  }
+
+  // Add thread_ts column for Slack thread tracking (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN thread_ts TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add role column to registered_groups for agent role identification (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN role TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Remove legacy UNIQUE constraint on folder so one agent folder can be
+  // registered to multiple channels.
+  try {
+    const tableSql = database
+      .prepare(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registered_groups'`,
+      )
+      .get() as { sql: string } | undefined;
+
+    if (tableSql?.sql && /\bfolder\s+TEXT\s+NOT\s+NULL\s+UNIQUE\b/i.test(tableSql.sql)) {
+      database.exec(`
+        BEGIN TRANSACTION;
+        CREATE TABLE registered_groups_v2 (
+          jid TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          folder TEXT NOT NULL,
+          trigger_pattern TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          container_config TEXT,
+          requires_trigger INTEGER DEFAULT 1,
+          role TEXT
+        );
+        INSERT INTO registered_groups_v2 (
+          jid,
+          name,
+          folder,
+          trigger_pattern,
+          added_at,
+          container_config,
+          requires_trigger,
+          role
+        )
+        SELECT
+          jid,
+          name,
+          folder,
+          trigger_pattern,
+          added_at,
+          container_config,
+          requires_trigger,
+          role
+        FROM registered_groups;
+        DROP TABLE registered_groups;
+        ALTER TABLE registered_groups_v2 RENAME TO registered_groups;
+        COMMIT;
+      `);
+      logger.info('Migrated registered_groups schema to remove folder uniqueness');
+    }
+  } catch (err) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      /* no open transaction */
+    }
+    logger.error(
+      { err },
+      'Failed to migrate registered_groups schema (folder UNIQUE removal)',
+    );
+    throw err;
   }
 }
 
@@ -240,7 +320,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -250,6 +330,7 @@ export function storeMessage(msg: NewMessage): void {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.thread_ts ?? null,
   );
 }
 
@@ -265,9 +346,10 @@ export function storeMessageDirect(msg: {
   timestamp: string;
   is_from_me: boolean;
   is_bot_message?: boolean;
+  thread_ts?: string;
 }): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -277,6 +359,7 @@ export function storeMessageDirect(msg: {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.thread_ts ?? null,
   );
 }
 
@@ -291,7 +374,7 @@ export function getNewMessages(
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders})
       AND is_bot_message = 0 AND content NOT LIKE ?
@@ -319,7 +402,7 @@ export function getMessagesSince(
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
       AND is_bot_message = 0 AND content NOT LIKE ?
@@ -511,23 +594,20 @@ export function getAllSessions(): Record<string, string> {
 
 // --- Registered group accessors ---
 
-export function getRegisteredGroup(
-  jid: string,
+type RegisteredGroupRow = {
+  jid: string;
+  name: string;
+  folder: string;
+  trigger_pattern: string;
+  added_at: string;
+  container_config: string | null;
+  requires_trigger: number | null;
+  role: string | null;
+};
+
+function mapRegisteredGroupRow(
+  row: RegisteredGroupRow,
 ): (RegisteredGroup & { jid: string }) | undefined {
-  const row = db
-    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
-    .get(jid) as
-    | {
-        jid: string;
-        name: string;
-        folder: string;
-        trigger_pattern: string;
-        added_at: string;
-        container_config: string | null;
-        requires_trigger: number | null;
-      }
-    | undefined;
-  if (!row) return undefined;
   if (!isValidGroupFolder(row.folder)) {
     logger.warn(
       { jid: row.jid, folder: row.folder },
@@ -535,6 +615,7 @@ export function getRegisteredGroup(
     );
     return undefined;
   }
+
   return {
     jid: row.jid,
     name: row.name,
@@ -545,7 +626,18 @@ export function getRegisteredGroup(
       ? JSON.parse(row.container_config)
       : undefined,
     requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    role: row.role ?? undefined,
   };
+}
+
+export function getRegisteredGroup(
+  jid: string,
+): (RegisteredGroup & { jid: string }) | undefined {
+  const row = db
+    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
+    .get(jid) as RegisteredGroupRow | undefined;
+  if (!row) return undefined;
+  return mapRegisteredGroupRow(row);
 }
 
 export function setRegisteredGroup(
@@ -556,8 +648,8 @@ export function setRegisteredGroup(
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -566,42 +658,46 @@ export function setRegisteredGroup(
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
+    group.role ?? null,
   );
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   const rows = db
     .prepare('SELECT * FROM registered_groups')
-    .all() as Array<{
-    jid: string;
-    name: string;
-    folder: string;
-    trigger_pattern: string;
-    added_at: string;
-    container_config: string | null;
-    requires_trigger: number | null;
-  }>;
+    .all() as RegisteredGroupRow[];
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
-    if (!isValidGroupFolder(row.folder)) {
-      logger.warn(
-        { jid: row.jid, folder: row.folder },
-        'Skipping registered group with invalid folder',
-      );
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) {
       continue;
     }
-    result[row.jid] = {
-      name: row.name,
-      folder: row.folder,
-      trigger: row.trigger_pattern,
-      added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
-      requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    };
+    const { jid, ...group } = mapped;
+    result[jid] = group;
   }
   return result;
+}
+
+export function getAgentsByChannel(jid: string): RegisteredGroup[] {
+  const rows = db
+    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
+    .all(jid) as RegisteredGroupRow[];
+
+  const groups: RegisteredGroup[] = [];
+  for (const row of rows) {
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) continue;
+    const { jid: _jid, ...group } = mapped;
+    groups.push(group);
+  }
+  return groups;
+}
+
+export function getChannelsForAgent(folder: string): string[] {
+  const rows = db
+    .prepare('SELECT jid FROM registered_groups WHERE folder = ? ORDER BY jid')
+    .all(folder) as Array<{ jid: string }>;
+  return rows.map((row) => row.jid);
 }
 
 // --- JSON migration ---

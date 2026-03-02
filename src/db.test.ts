@@ -4,10 +4,14 @@ import {
   _initTestDatabase,
   createTask,
   deleteTask,
+  getAgentsByChannel,
   getAllChats,
+  getAllRegisteredGroups,
+  getChannelsForAgent,
   getMessagesSince,
   getNewMessages,
   getTaskById,
+  setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
   updateTask,
@@ -263,6 +267,74 @@ describe('storeChatMetadata', () => {
     storeChatMetadata('group@g.us', '2024-01-01T00:00:01.000Z');
     const chats = getAllChats();
     expect(chats[0].last_message_time).toBe('2024-01-01T00:00:05.000Z');
+  });
+});
+
+// --- Registered group lookups ---
+
+describe('registered_groups multi-channel lookups', () => {
+  it('allows registering the same folder for multiple channel JIDs', () => {
+    setRegisteredGroup('slack:C111', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:00.000Z',
+      requiresTrigger: false,
+      role: 'pm-agent',
+    });
+    setRegisteredGroup('slack:C222', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:00.000Z',
+      requiresTrigger: false,
+      role: 'pm-agent',
+    });
+
+    const all = getAllRegisteredGroups();
+    expect(all['slack:C111']).toBeDefined();
+    expect(all['slack:C222']).toBeDefined();
+    expect(all['slack:C111'].folder).toBe('pm-autorag');
+    expect(all['slack:C222'].folder).toBe('pm-autorag');
+  });
+
+  it('getChannelsForAgent returns all registered channel JIDs for a folder', () => {
+    setRegisteredGroup('slack:C111', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+    setRegisteredGroup('slack:C222', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+    setRegisteredGroup('slack:C333', {
+      name: 'Marketer',
+      folder: 'marketer',
+      trigger: '@marketer',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    const channels = getChannelsForAgent('pm-autorag');
+    expect(channels).toEqual(['slack:C111', 'slack:C222']);
+  });
+
+  it('getAgentsByChannel returns all registered agents for a channel JID', () => {
+    setRegisteredGroup('slack:C111', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      added_at: '2024-01-01T00:00:00.000Z',
+      role: 'pm-agent',
+    });
+
+    const agents = getAgentsByChannel('slack:C111');
+    expect(agents).toHaveLength(1);
+    expect(agents[0].folder).toBe('pm-autorag');
+    expect(agents[0].role).toBe('pm-agent');
   });
 });
 

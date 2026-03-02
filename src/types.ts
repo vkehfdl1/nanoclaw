@@ -31,6 +31,13 @@ export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
   model?: string; // Optional per-group Claude model override (e.g., "claude-opus-4-6")
+  /**
+   * Per-group environment variables injected into the container at runtime.
+   * Used by PM agents to receive project-specific config (GITHUB_REPO, SLACK_CHANNEL_ID, etc.).
+   * Values are passed via `-e KEY=VALUE` docker flags — never written to disk.
+   * Do NOT put secrets here; use the .env file for secrets like GITHUB_TOKEN.
+   */
+  envVars?: Record<string, string>;
 }
 
 export interface RegisteredGroup {
@@ -40,6 +47,12 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  /**
+   * Agent role identifier. Use 'pm-agent' for project manager agents that
+   * operate in Slack channels. Other values: 'marketer', 'todomon', etc.
+   * If omitted, the group behaves as a generic registered group.
+   */
+  role?: string;
 }
 
 export interface NewMessage {
@@ -51,6 +64,8 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  /** Slack thread timestamp — set for messages that belong to (or start) a thread */
+  thread_ts?: string;
 }
 
 export interface ScheduledTask {
