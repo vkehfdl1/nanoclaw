@@ -52,7 +52,7 @@ describe('storeMessage', () => {
     store({
       id: 'msg-1',
       chat_jid: 'group@g.us',
-      sender: '123@s.whatsapp.net',
+      sender: '123@slack.user',
       sender_name: 'Alice',
       content: 'hello world',
       timestamp: '2024-01-01T00:00:01.000Z',
@@ -61,7 +61,7 @@ describe('storeMessage', () => {
     const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 'Andy');
     expect(messages).toHaveLength(1);
     expect(messages[0].id).toBe('msg-1');
-    expect(messages[0].sender).toBe('123@s.whatsapp.net');
+    expect(messages[0].sender).toBe('123@slack.user');
     expect(messages[0].sender_name).toBe('Alice');
     expect(messages[0].content).toBe('hello world');
   });
@@ -72,7 +72,7 @@ describe('storeMessage', () => {
     store({
       id: 'msg-2',
       chat_jid: 'group@g.us',
-      sender: '111@s.whatsapp.net',
+      sender: '111@slack.user',
       sender_name: 'Dave',
       content: '',
       timestamp: '2024-01-01T00:00:04.000Z',
@@ -88,7 +88,7 @@ describe('storeMessage', () => {
     store({
       id: 'msg-3',
       chat_jid: 'group@g.us',
-      sender: 'me@s.whatsapp.net',
+      sender: 'me@slack.user',
       sender_name: 'Me',
       content: 'my message',
       timestamp: '2024-01-01T00:00:05.000Z',
@@ -106,7 +106,7 @@ describe('storeMessage', () => {
     store({
       id: 'msg-dup',
       chat_jid: 'group@g.us',
-      sender: '123@s.whatsapp.net',
+      sender: '123@slack.user',
       sender_name: 'Alice',
       content: 'original',
       timestamp: '2024-01-01T00:00:01.000Z',
@@ -115,7 +115,7 @@ describe('storeMessage', () => {
     store({
       id: 'msg-dup',
       chat_jid: 'group@g.us',
-      sender: '123@s.whatsapp.net',
+      sender: '123@slack.user',
       sender_name: 'Alice',
       content: 'updated',
       timestamp: '2024-01-01T00:00:01.000Z',
@@ -134,20 +134,20 @@ describe('getMessagesSince', () => {
     storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
 
     store({
-      id: 'm1', chat_jid: 'group@g.us', sender: 'Alice@s.whatsapp.net',
+      id: 'm1', chat_jid: 'group@g.us', sender: 'Alice@slack.user',
       sender_name: 'Alice', content: 'first', timestamp: '2024-01-01T00:00:01.000Z',
     });
     store({
-      id: 'm2', chat_jid: 'group@g.us', sender: 'Bob@s.whatsapp.net',
+      id: 'm2', chat_jid: 'group@g.us', sender: 'Bob@slack.user',
       sender_name: 'Bob', content: 'second', timestamp: '2024-01-01T00:00:02.000Z',
     });
     storeMessage({
-      id: 'm3', chat_jid: 'group@g.us', sender: 'Bot@s.whatsapp.net',
+      id: 'm3', chat_jid: 'group@g.us', sender: 'Bot@slack.user',
       sender_name: 'Bot', content: 'bot reply', timestamp: '2024-01-01T00:00:03.000Z',
       is_bot_message: true,
     });
     store({
-      id: 'm4', chat_jid: 'group@g.us', sender: 'Carol@s.whatsapp.net',
+      id: 'm4', chat_jid: 'group@g.us', sender: 'Carol@slack.user',
       sender_name: 'Carol', content: 'third', timestamp: '2024-01-01T00:00:04.000Z',
     });
   });
@@ -174,7 +174,7 @@ describe('getMessagesSince', () => {
   it('filters pre-migration bot messages via content prefix backstop', () => {
     // Simulate a message written before migration: has prefix but is_bot_message = 0
     store({
-      id: 'm5', chat_jid: 'group@g.us', sender: 'Bot@s.whatsapp.net',
+      id: 'm5', chat_jid: 'group@g.us', sender: 'Bot@slack.user',
       sender_name: 'Bot', content: 'Andy: old bot reply',
       timestamp: '2024-01-01T00:00:05.000Z',
     });
@@ -210,20 +210,20 @@ describe('getNewMessages', () => {
     storeChatMetadata('group2@g.us', '2024-01-01T00:00:00.000Z');
 
     store({
-      id: 'a1', chat_jid: 'group1@g.us', sender: 'user@s.whatsapp.net',
+      id: 'a1', chat_jid: 'group1@g.us', sender: 'user@slack.user',
       sender_name: 'User', content: 'g1 msg1', timestamp: '2024-01-01T00:00:01.000Z',
     });
     store({
-      id: 'a2', chat_jid: 'group2@g.us', sender: 'user@s.whatsapp.net',
+      id: 'a2', chat_jid: 'group2@g.us', sender: 'user@slack.user',
       sender_name: 'User', content: 'g2 msg1', timestamp: '2024-01-01T00:00:02.000Z',
     });
     storeMessage({
-      id: 'a3', chat_jid: 'group1@g.us', sender: 'user@s.whatsapp.net',
+      id: 'a3', chat_jid: 'group1@g.us', sender: 'user@slack.user',
       sender_name: 'User', content: 'bot reply', timestamp: '2024-01-01T00:00:03.000Z',
       is_bot_message: true,
     });
     store({
-      id: 'a4', chat_jid: 'group1@g.us', sender: 'user@s.whatsapp.net',
+      id: 'a4', chat_jid: 'group1@g.us', sender: 'user@slack.user',
       sender_name: 'User', content: 'g1 msg2', timestamp: '2024-01-01T00:00:04.000Z',
     });
   });
@@ -323,16 +323,20 @@ describe('registered_groups multi-channel lookups', () => {
       name: 'PM Agent',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu', '영구'],
       added_at: '2024-01-01T00:00:00.000Z',
       requiresTrigger: false,
+      gateway: { rules: [{ match: 'any_message' }] },
       role: 'pm-agent',
     });
     setRegisteredGroup('slack:C222', {
       name: 'PM Agent',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu', '영구'],
       added_at: '2024-01-01T00:00:00.000Z',
       requiresTrigger: false,
+      gateway: { rules: [{ match: 'any_message' }] },
       role: 'pm-agent',
     });
 
@@ -348,19 +352,25 @@ describe('registered_groups multi-channel lookups', () => {
       name: 'PM Agent',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu'],
       added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
     });
     setRegisteredGroup('slack:C222', {
       name: 'PM Agent',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu'],
       added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
     });
     setRegisteredGroup('slack:C333', {
       name: 'Marketer',
       folder: 'marketer',
       trigger: '@marketer',
+      aliases: ['marketer'],
       added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
     });
 
     const channels = getChannelsForAgent('pm-autorag');
@@ -372,14 +382,18 @@ describe('registered_groups multi-channel lookups', () => {
       name: 'PM Agent',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu'],
       added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
       role: 'pm-agent',
     });
     setRegisteredGroup('slack:C111', {
       name: 'Marketer',
       folder: 'marketer',
       trigger: '@marketer',
+      aliases: ['marketer'],
       added_at: '2024-01-01T00:00:01.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
       role: 'marketer',
     });
 
@@ -394,14 +408,18 @@ describe('registered_groups multi-channel lookups', () => {
       name: 'PM Agent',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu'],
       added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
       role: 'pm-agent',
     });
     setRegisteredGroup('slack:C111', {
       name: 'Marketer',
       folder: 'marketer',
       trigger: '@marketer',
+      aliases: ['marketer'],
       added_at: '2024-01-01T00:00:01.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
       role: 'marketer',
     });
 
@@ -410,7 +428,9 @@ describe('registered_groups multi-channel lookups', () => {
       name: 'Young-gu',
       folder: 'pm-autorag',
       trigger: '@young-gu',
+      aliases: ['young-gu', '영구'],
       added_at: '2024-01-01T00:00:02.000Z',
+      gateway: { rules: [{ match: 'any_message' }, { match: 'self_mention' }] },
       role: 'pm-agent',
       requiresTrigger: false,
     });
@@ -450,6 +470,75 @@ describe('default agent registrations', () => {
     expect(dobby).toBeDefined();
     expect(dobby!.requiresTrigger).toBe(true);
     expect(dobby!.role).toBe('main');
+  });
+
+  it('stores and retrieves aliases and gateway fields', () => {
+    _ensureDefaultAgentRegistrationsForTests();
+
+    const channels = getChannelsForAgent('marketer');
+    const agentsInChannel = getAgentsByChannel(channels[0]);
+
+    const marketer = agentsInChannel.find((g) => g.folder === 'marketer');
+    expect(marketer).toBeDefined();
+    expect(marketer!.aliases).toEqual(['marketer', '마케터']);
+    expect(marketer!.gateway).toEqual({
+      rules: [
+        { channel: [channels[0]], match: 'any_message' },
+        { match: 'self_mention' },
+      ],
+    });
+
+    const dobby = agentsInChannel.find((g) => g.folder === 'main');
+    expect(dobby).toBeDefined();
+    expect(dobby!.aliases).toEqual(['dobby', '도비']);
+    expect(dobby!.gateway).toEqual({ rules: [{ match: 'self_mention' }] });
+  });
+});
+
+describe('aliases/gateway round-trip', () => {
+  it('stores and retrieves aliases and gateway via setRegisteredGroup/getAllRegisteredGroups', () => {
+    setRegisteredGroup('slack:C_TEST', {
+      name: 'Test Agent',
+      folder: 'test-agent',
+      trigger: '@test',
+      aliases: ['test', '테스트'],
+      added_at: '2024-01-01T00:00:00.000Z',
+      gateway: {
+        rules: [
+          { channel: ['slack:C_TEST'], match: 'any_message' },
+          { match: 'self_mention' },
+          { match: 'cross_agent', fromAgents: ['main'] },
+        ],
+      },
+    });
+
+    const all = getAllRegisteredGroups();
+    const agent = all['slack:C_TEST'];
+    expect(agent).toBeDefined();
+    expect(agent.aliases).toEqual(['test', '테스트']);
+    expect(agent.gateway.rules).toHaveLength(3);
+    expect(agent.gateway.rules[0]).toEqual({ channel: ['slack:C_TEST'], match: 'any_message' });
+    expect(agent.gateway.rules[1]).toEqual({ match: 'self_mention' });
+    expect(agent.gateway.rules[2]).toEqual({ match: 'cross_agent', fromAgents: ['main'] });
+  });
+
+  it('falls back to trigger-derived aliases when aliases column is null', () => {
+    // Directly store without aliases via raw SQL would result in null aliases
+    // Test the fallback by storing with empty aliases
+    setRegisteredGroup('slack:C_FALLBACK', {
+      name: 'Fallback Agent',
+      folder: 'fallback',
+      trigger: '@fallback-agent',
+      aliases: [],
+      added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [] },
+    });
+
+    const all = getAllRegisteredGroups();
+    const agent = all['slack:C_FALLBACK'];
+    expect(agent).toBeDefined();
+    // Should derive from trigger since aliases was empty
+    expect(agent.aliases).toEqual(['fallback-agent']);
   });
 });
 

@@ -22,7 +22,9 @@ function makeAgent(overrides: Partial<RegisteredGroup> = {}): RegisteredGroup {
     name: 'Agent',
     folder: 'agent',
     trigger: '@agent',
+    aliases: ['agent'],
     added_at: '2026-03-02T00:00:00.000Z',
+    gateway: { rules: [{ match: 'self_mention' }] },
     role: 'pm-agent',
     ...overrides,
   };
@@ -59,6 +61,7 @@ describe('channel members', () => {
         name: 'Young-gu',
         folder: 'pm-autorag',
         trigger: '@young-gu',
+        aliases: ['young-gu'],
         role: 'pm-agent',
       }),
     ]);
@@ -178,10 +181,10 @@ describe('channel members', () => {
   it('prependChannelMembersToPrompt uses the source channel when agent is in multiple channels', async () => {
     getAgentsByChannelMock.mockImplementation((jid: string) => {
       if (jid === 'slack:C111') {
-        return [makeAgent({ name: 'Young-gu', folder: 'pm-autorag', trigger: '@young-gu', role: 'pm-agent' })];
+        return [makeAgent({ name: 'Young-gu', folder: 'pm-autorag', trigger: '@young-gu', aliases: ['young-gu'], role: 'pm-agent' })];
       }
       if (jid === 'slack:C222') {
-        return [makeAgent({ name: 'Marketer', folder: 'marketer', trigger: '@marketer', role: 'marketer' })];
+        return [makeAgent({ name: 'Marketer', folder: 'marketer', trigger: '@marketer', aliases: ['marketer'], role: 'marketer' })];
       }
       return [];
     });

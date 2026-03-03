@@ -22,7 +22,9 @@ const MARKETER_GROUP: RegisteredGroup = {
   name: 'Marketer',
   folder: 'marketer',
   trigger: '@Andy',
+  aliases: ['marketer'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'any_message' }] },
 };
 
 const MARKETER_JID = 'marketer@g.us';
@@ -409,8 +411,8 @@ describe('bootstrapAllAgentSchedules', () => {
 
     const groups: Record<string, RegisteredGroup> = {
       [MARKETER_JID]: MARKETER_GROUP,
-      'other@g.us': { name: 'Other', folder: 'other-group', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' },
-      'noschedule@g.us': { name: 'No Schedule', folder: 'no-schedule', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' },
+      'other@g.us': { name: 'Other', folder: 'other-group', trigger: '@Andy', aliases: ['andy'], added_at: '2024-01-01T00:00:00.000Z', gateway: { rules: [{ match: 'self_mention' }] } },
+      'noschedule@g.us': { name: 'No Schedule', folder: 'no-schedule', trigger: '@Andy', aliases: ['andy'], added_at: '2024-01-01T00:00:00.000Z', gateway: { rules: [{ match: 'self_mention' }] } },
     };
 
     bootstrapAllAgentSchedules(groups);
@@ -463,7 +465,7 @@ describe('bootstrapAllAgentSchedules', () => {
     fs.mkdirSync(path.join(tmpDir, 'groups', 'dobby'), { recursive: true });
 
     const groups: Record<string, RegisteredGroup> = {
-      'main@g.us': { name: 'Main', folder: 'main', trigger: 'always', added_at: '2024-01-01T00:00:00.000Z' },
+      'main@g.us': { name: 'Main', folder: 'main', trigger: 'always', aliases: ['main'], added_at: '2024-01-01T00:00:00.000Z', gateway: { rules: [{ match: 'any_message' }] } },
     };
 
     bootstrapAllAgentSchedules(groups);
@@ -479,7 +481,7 @@ describe('bootstrapAllAgentSchedules', () => {
 
     const groups: Record<string, RegisteredGroup> = {
       [MARKETER_JID]: MARKETER_GROUP,
-      'other@g.us': { name: 'Other', folder: 'other', trigger: '@Andy', added_at: '2024-01-01T00:00:00.000Z' },
+      'other@g.us': { name: 'Other', folder: 'other', trigger: '@Andy', aliases: ['andy'], added_at: '2024-01-01T00:00:00.000Z', gateway: { rules: [{ match: 'self_mention' }] } },
     };
 
     bootstrapAllAgentSchedules(groups);

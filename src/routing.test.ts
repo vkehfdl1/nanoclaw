@@ -13,14 +13,14 @@ beforeEach(() => {
 describe('JID ownership patterns', () => {
   // These test the patterns that will become ownsJid() on the Channel interface
 
-  it('WhatsApp group JID: ends with @g.us', () => {
-    const jid = '12345678@g.us';
-    expect(jid.endsWith('@g.us')).toBe(true);
+  it('Slack channel JID: starts with slack:C', () => {
+    const jid = 'slack:C12345678';
+    expect(jid.startsWith('slack:C')).toBe(true);
   });
 
-  it('WhatsApp DM JID: ends with @s.whatsapp.net', () => {
-    const jid = '12345678@s.whatsapp.net';
-    expect(jid.endsWith('@s.whatsapp.net')).toBe(true);
+  it('Slack MPIM/Private channel JID: starts with slack:G', () => {
+    const jid = 'slack:G12345678';
+    expect(jid.startsWith('slack:G')).toBe(true);
   });
 });
 
@@ -28,56 +28,58 @@ describe('JID ownership patterns', () => {
 
 describe('getAvailableGroups', () => {
   it('returns only groups, excludes DMs', () => {
-    storeChatMetadata('group1@g.us', '2024-01-01T00:00:01.000Z', 'Group 1', 'whatsapp', true);
-    storeChatMetadata('user@s.whatsapp.net', '2024-01-01T00:00:02.000Z', 'User DM', 'whatsapp', false);
-    storeChatMetadata('group2@g.us', '2024-01-01T00:00:03.000Z', 'Group 2', 'whatsapp', true);
+    storeChatMetadata('slack:C111', '2024-01-01T00:00:01.000Z', 'Group 1', 'slack', true);
+    storeChatMetadata('slack:D111', '2024-01-01T00:00:02.000Z', 'User DM', 'slack', false);
+    storeChatMetadata('slack:C222', '2024-01-01T00:00:03.000Z', 'Group 2', 'slack', true);
 
     const groups = getAvailableGroups();
     expect(groups).toHaveLength(2);
-    expect(groups.map((g) => g.jid)).toContain('group1@g.us');
-    expect(groups.map((g) => g.jid)).toContain('group2@g.us');
-    expect(groups.map((g) => g.jid)).not.toContain('user@s.whatsapp.net');
+    expect(groups.map((g) => g.jid)).toContain('slack:C111');
+    expect(groups.map((g) => g.jid)).toContain('slack:C222');
+    expect(groups.map((g) => g.jid)).not.toContain('slack:D111');
   });
 
   it('excludes __group_sync__ sentinel', () => {
     storeChatMetadata('__group_sync__', '2024-01-01T00:00:00.000Z');
-    storeChatMetadata('group@g.us', '2024-01-01T00:00:01.000Z', 'Group', 'whatsapp', true);
+    storeChatMetadata('slack:C333', '2024-01-01T00:00:01.000Z', 'Group', 'slack', true);
 
     const groups = getAvailableGroups();
     expect(groups).toHaveLength(1);
-    expect(groups[0].jid).toBe('group@g.us');
+    expect(groups[0].jid).toBe('slack:C333');
   });
 
   it('marks registered groups correctly', () => {
-    storeChatMetadata('reg@g.us', '2024-01-01T00:00:01.000Z', 'Registered', 'whatsapp', true);
-    storeChatMetadata('unreg@g.us', '2024-01-01T00:00:02.000Z', 'Unregistered', 'whatsapp', true);
+    storeChatMetadata('slack:C444', '2024-01-01T00:00:01.000Z', 'Registered', 'slack', true);
+    storeChatMetadata('slack:C555', '2024-01-01T00:00:02.000Z', 'Unregistered', 'slack', true);
 
     _setRegisteredGroups({
-      'reg@g.us': {
+      'slack:C444': {
         name: 'Registered',
         folder: 'registered',
         trigger: '@Andy',
+        aliases: ['andy'],
         added_at: '2024-01-01T00:00:00.000Z',
+        gateway: { rules: [{ match: 'self_mention' }] },
       },
     });
 
     const groups = getAvailableGroups();
-    const reg = groups.find((g) => g.jid === 'reg@g.us');
-    const unreg = groups.find((g) => g.jid === 'unreg@g.us');
+    const reg = groups.find((g) => g.jid === 'slack:C444');
+    const unreg = groups.find((g) => g.jid === 'slack:C555');
 
     expect(reg?.isRegistered).toBe(true);
     expect(unreg?.isRegistered).toBe(false);
   });
 
   it('returns groups ordered by most recent activity', () => {
-    storeChatMetadata('old@g.us', '2024-01-01T00:00:01.000Z', 'Old', 'whatsapp', true);
-    storeChatMetadata('new@g.us', '2024-01-01T00:00:05.000Z', 'New', 'whatsapp', true);
-    storeChatMetadata('mid@g.us', '2024-01-01T00:00:03.000Z', 'Mid', 'whatsapp', true);
+    storeChatMetadata('slack:Cold', '2024-01-01T00:00:01.000Z', 'Old', 'slack', true);
+    storeChatMetadata('slack:Cnew', '2024-01-01T00:00:05.000Z', 'New', 'slack', true);
+    storeChatMetadata('slack:Cmid', '2024-01-01T00:00:03.000Z', 'Mid', 'slack', true);
 
     const groups = getAvailableGroups();
-    expect(groups[0].jid).toBe('new@g.us');
-    expect(groups[1].jid).toBe('mid@g.us');
-    expect(groups[2].jid).toBe('old@g.us');
+    expect(groups[0].jid).toBe('slack:Cnew');
+    expect(groups[1].jid).toBe('slack:Cmid');
+    expect(groups[2].jid).toBe('slack:Cold');
   });
 
   it('excludes non-group chats regardless of JID format', () => {
@@ -86,11 +88,11 @@ describe('getAvailableGroups', () => {
     // Explicitly non-group with unusual JID
     storeChatMetadata('custom:abc', '2024-01-01T00:00:02.000Z', 'Custom DM', 'custom', false);
     // A real group for contrast
-    storeChatMetadata('group@g.us', '2024-01-01T00:00:03.000Z', 'Group', 'whatsapp', true);
+    storeChatMetadata('slack:C666', '2024-01-01T00:00:03.000Z', 'Group', 'slack', true);
 
     const groups = getAvailableGroups();
     expect(groups).toHaveLength(1);
-    expect(groups[0].jid).toBe('group@g.us');
+    expect(groups[0].jid).toBe('slack:C666');
   });
 
   it('returns empty array when no chats exist', () => {

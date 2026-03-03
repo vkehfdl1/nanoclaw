@@ -8,10 +8,9 @@ import {
   POLL_INTERVAL,
   SLACK_APP_TOKEN,
   SLACK_BOT_TOKEN,
-  TRIGGER_PATTERN,
 } from './config.js';
+import { evaluateGateway, matchesAlias } from './gateway.js';
 import { SlackChannel } from './channels/slack.js';
-import { WhatsAppChannel } from './channels/whatsapp.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -55,7 +54,6 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel | undefined;
 let slack: SlackChannel | undefined;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -132,34 +130,21 @@ export function _setRegisteredGroups(groups: Record<string, RegisteredGroup>): v
   registeredGroups = groups;
 }
 
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function isClearCommand(content: string, group: RegisteredGroup): boolean {
   const trimmed = content.trim();
   if (/^\/clear(?:\s+.*)?$/i.test(trimmed)) return true;
 
-  const trigger = group.trigger?.trim();
-  if (!trigger) return false;
-  const triggerRegex = new RegExp(
-    `^${escapeRegex(trigger)}\\s+\\/clear(?:\\s+.*)?$`,
-    'i',
-  );
-  return triggerRegex.test(trimmed);
-}
-
-function isTriggerMatch(content: string, group: RegisteredGroup): boolean {
-  const trimmed = content.trim();
-  const trigger = group.trigger?.trim();
-  if (!trigger) {
-    return TRIGGER_PATTERN.test(trimmed);
+  // Check for "alias /clear" pattern
+  const aliases = group.aliases ?? [];
+  for (const alias of aliases) {
+    const lower = trimmed.toLowerCase();
+    const aliasLower = alias.toLowerCase();
+    if (lower.startsWith(aliasLower)) {
+      const rest = trimmed.slice(alias.length).trim();
+      if (/^\/clear(?:\s+.*)?$/i.test(rest)) return true;
+    }
   }
-  const triggerRegex = new RegExp(
-    `^${escapeRegex(trigger)}(?:\\b|\\s|$)`,
-    'i',
-  );
-  return triggerRegex.test(trimmed);
+  return false;
 }
 
 function getAgentCursorKey(chatJid: string, agentFolder: string): string {
@@ -263,10 +248,10 @@ async function processGroupMessages(
     return true;
   }
 
-  // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
-    const hasTrigger = missedMessages.some((m) => isTriggerMatch(m.content, group));
-    if (!hasTrigger) return true;
+  // Use gateway evaluation to determine if this agent should process
+  if (!isMainGroup) {
+    const hasMatch = missedMessages.some((m) => evaluateGateway(m, group, chatJid));
+    if (!hasMatch) return true;
   }
 
   const prompt = await prependChannelMembersToPrompt(
@@ -499,7 +484,6 @@ async function startMessageLoop(): Promise<void> {
             const group = route.group;
             const agentFolder = group.folder;
             const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
-            const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
             const latestClear = [...groupMessages]
               .reverse()
@@ -515,14 +499,14 @@ async function startMessageLoop(): Promise<void> {
               continue;
             }
 
-            // For non-main groups, only act on trigger messages.
-            // Non-trigger messages accumulate in DB and get pulled as
-            // context when a trigger eventually arrives.
-            if (needsTrigger) {
-              const hasTrigger = groupMessages.some((m) =>
-                isTriggerMatch(m.content, group),
+            // Use gateway evaluation to determine if this agent should process.
+            // Non-matching messages accumulate in DB and get pulled as
+            // context when a matching message eventually arrives.
+            if (!isMainGroup) {
+              const hasMatch = groupMessages.some((m) =>
+                evaluateGateway(m, group, chatJid),
               );
-              if (!hasTrigger) continue;
+              if (!hasMatch) continue;
             }
 
             // Pull all messages since this (chat, agent) cursor so non-trigger
@@ -620,18 +604,21 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels (Slack primary, WhatsApp as legacy fallback)
-  if (SLACK_BOT_TOKEN && SLACK_APP_TOKEN) {
-    slack = new SlackChannel({ ...channelOpts, botToken: SLACK_BOT_TOKEN, appToken: SLACK_APP_TOKEN });
-    channels.push(slack);
-    await slack.connect();
-    logger.info('Slack channel connected as primary transport');
-  } else {
-    whatsapp = new WhatsAppChannel(channelOpts);
-    channels.push(whatsapp);
-    await whatsapp.connect();
-    logger.info('Slack tokens missing; connected legacy WhatsApp fallback channel');
+  if (!SLACK_BOT_TOKEN || !SLACK_APP_TOKEN) {
+    throw new Error(
+      'Slack configuration is required. Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN.',
+    );
   }
+
+  // Create and connect channel (Slack only)
+  slack = new SlackChannel({
+    ...channelOpts,
+    botToken: SLACK_BOT_TOKEN,
+    appToken: SLACK_APP_TOKEN,
+  });
+  channels.push(slack);
+  await slack.connect();
+  logger.info('Slack channel connected');
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -668,7 +655,6 @@ async function main(): Promise<void> {
     registerGroup,
     syncGroupMetadata: (force) => {
       if (slack) return slack.syncChannels();
-      if (whatsapp) return whatsapp.syncGroupMetadata(force);
       return Promise.resolve();
     },
     getAvailableGroups,

@@ -109,8 +109,15 @@ function getAgentMembersForChannel(channelId: string): ChannelMember[] {
   const agents: ChannelMember[] = [];
 
   for (const group of groups) {
-    const trigger = group.trigger?.trim();
-    const mentionableId = trigger || `@${group.folder}`;
+    // Prefer aliases[0] for the mentionable ID
+    let mentionableId: string;
+    if (group.aliases?.length) {
+      const alias = group.aliases[0];
+      mentionableId = alias.startsWith('@') ? alias : `@${alias}`;
+    } else {
+      const trigger = group.trigger?.trim();
+      mentionableId = trigger || `@${group.folder}`;
+    }
     if (seen.has(mentionableId)) {
       continue;
     }

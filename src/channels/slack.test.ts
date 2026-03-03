@@ -37,31 +37,9 @@ vi.mock('fs', async () => {
   };
 });
 
-// Mock the PM mention helper module
-vi.mock('./slack-pm-mention.js', () => ({
-  isPmAgentGroup: vi.fn((group: { role?: string }) => group.role === 'pm-agent'),
-  extractPmMentionContext: vi.fn().mockResolvedValue({
-    mentionText: 'help me',
-    rawText: '<@BOT_USER_123> help me',
-    senderUserId: 'U_ALICE',
-    senderName: 'Alice',
-    channelId: 'C123456789',
-    ts: '1700000010.000001',
-    timestamp: new Date(1700000010 * 1000).toISOString(),
-    threadTs: undefined,
-    isInThread: false,
-    parentMessageText: undefined,
-    recentMessages: [],
-  }),
-  formatPmMentionContent: vi.fn((ctx: { mentionText: string; senderName: string }) =>
-    `[PM @mention from ${ctx.senderName}]\n${ctx.mentionText}`,
-  ),
-}));
-
 // --- Fake @slack/bolt App ---
 
 type SlackMessageHandler = (ctx: { message: Record<string, unknown>; client: FakeClient }) => Promise<void>;
-type SlackEventHandler = (ctx: { event: Record<string, unknown>; client: FakeClient }) => Promise<void>;
 
 interface FakeClient {
   auth: { test: ReturnType<typeof vi.fn> };
@@ -103,22 +81,17 @@ function createFakeClient(): FakeClient {
 
 let fakeClient: FakeClient;
 let messageHandlers: SlackMessageHandler[] = [];
-let eventHandlers: Map<string, SlackEventHandler[]> = new Map();
 
 function createFakeApp() {
   messageHandlers = [];
-  eventHandlers = new Map();
 
   return {
     client: fakeClient,
     message: (handler: SlackMessageHandler) => {
       messageHandlers.push(handler);
     },
-    event: (eventName: string, handler: SlackEventHandler) => {
-      if (!eventHandlers.has(eventName)) {
-        eventHandlers.set(eventName, []);
-      }
-      eventHandlers.get(eventName)!.push(handler);
+    event: (_eventName: string, _handler: unknown) => {
+      // No event handlers needed — app_mention and reaction_added are removed
     },
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
@@ -129,8 +102,6 @@ let fakeApp: ReturnType<typeof createFakeApp>;
 
 vi.mock('@slack/bolt', () => {
   return {
-    // Use a class so `new App(...)` works. The constructor returns the current
-    // `fakeApp` object (set by beforeEach) via closure over the outer variable.
     App: class FakeApp {
       constructor(_opts: unknown) {
         return fakeApp as unknown as FakeApp;
@@ -150,24 +121,6 @@ async function triggerMessage(msg: Record<string, unknown>) {
   }
 }
 
-// --- Helper to fire a fake app_mention event ---
-
-async function triggerMention(event: Record<string, unknown>) {
-  const handlers = eventHandlers.get('app_mention') ?? [];
-  for (const handler of handlers) {
-    await handler({ event: event as never, client: fakeClient });
-  }
-}
-
-// --- Helper to fire a fake reaction_added event ---
-
-async function triggerReaction(event: Record<string, unknown>) {
-  const handlers = eventHandlers.get('reaction_added') ?? [];
-  for (const handler of handlers) {
-    await handler({ event: event as never, client: fakeClient });
-  }
-}
-
 // --- Test helpers ---
 
 const REGISTERED_JID = 'slack:C123456789';
@@ -182,49 +135,9 @@ function createTestOpts(overrides?: Partial<SlackChannelOpts>): SlackChannelOpts
         name: 'Test Channel',
         folder: 'test-channel',
         trigger: '@Andy',
+        aliases: ['andy'],
         added_at: '2024-01-01T00:00:00.000Z',
-        // No role — generic group (not a PM agent)
-      },
-    })),
-    botToken: 'xoxb-test-token',
-    appToken: 'xapp-test-token',
-    ...overrides,
-  };
-}
-
-/** Opts for a PM agent channel (role: 'pm-agent') */
-function createPmAgentOpts(overrides?: Partial<SlackChannelOpts>): SlackChannelOpts {
-  return {
-    onMessage: vi.fn(),
-    onChatMetadata: vi.fn(),
-    registeredGroups: vi.fn(() => ({
-      [REGISTERED_JID]: {
-        name: 'PM Test Channel',
-        folder: 'pm-test',
-        trigger: '@Andy',
-        added_at: '2024-01-01T00:00:00.000Z',
-        role: 'pm-agent',
-      },
-    })),
-    botToken: 'xoxb-test-token',
-    appToken: 'xapp-test-token',
-    ...overrides,
-  };
-}
-
-/** Opts for the dedicated marketer channel (role: 'marketer') */
-function createMarketerOpts(overrides?: Partial<SlackChannelOpts>): SlackChannelOpts {
-  return {
-    onMessage: vi.fn(),
-    onChatMetadata: vi.fn(),
-    registeredGroups: vi.fn(() => ({
-      [REGISTERED_JID]: {
-        name: 'Marketer Channel',
-        folder: 'marketer',
-        trigger: '@marketer',
-        added_at: '2024-01-01T00:00:00.000Z',
-        requiresTrigger: false,
-        role: 'marketer',
+        gateway: { rules: [{ match: 'self_mention' as const }] },
       },
     })),
     botToken: 'xoxb-test-token',
@@ -288,7 +201,7 @@ describe('SlackChannel', () => {
       expect(channel.ownsJid('slack:C123456')).toBe(true);
     });
 
-    it('does not own WhatsApp JIDs', () => {
+    it('does not own non-Slack JIDs', () => {
       const channel = new SlackChannel(createTestOpts());
       expect(channel.ownsJid('12345@g.us')).toBe(false);
     });
@@ -311,7 +224,6 @@ describe('SlackChannel', () => {
         ts: '1700000001.000001',
         text: 'Hello!',
         user: 'U_ALICE',
-        // No thread_ts — top-level message
       });
 
       expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
@@ -323,13 +235,12 @@ describe('SlackChannel', () => {
 
       await triggerMessage({
         channel: CHANNEL_ID,
-        ts: '1700000002.000001',        // reply timestamp
-        thread_ts: '1700000001.000000', // parent thread timestamp
+        ts: '1700000002.000001',
+        thread_ts: '1700000001.000000',
         text: 'Another message in thread',
         user: 'U_ALICE',
       });
 
-      // Should use the parent thread_ts so replies go into the same thread
       expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000000');
     });
 
@@ -347,13 +258,9 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      // User message sets the thread
       await triggerMessage({ channel: CHANNEL_ID, ts: '1700000001.000001', text: 'User msg', user: 'U_ALICE' });
-
-      // Bot's own reply — BOT_USER_123 matches auth.test mock
       await triggerMessage({ channel: CHANNEL_ID, ts: '1700000002.000001', text: 'Bot reply', user: 'BOT_USER_123' });
 
-      // Should still point to the user's message thread
       expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
     });
 
@@ -402,294 +309,9 @@ describe('SlackChannel', () => {
         expect.objectContaining({ thread_ts: '1700000004.000001' }),
       );
     });
-
-    it('skips @mention messages for PM agent channels (handled by app_mention instead)', async () => {
-      const opts = createPmAgentOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      // A message that @mentions the bot in a PM agent channel
-      await triggerMessage({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> please fix the bug',
-        user: 'U_ALICE',
-      });
-
-      // The message handler should skip it; app_mention will handle it
-      expect(opts.onMessage).not.toHaveBeenCalled();
-    });
   });
 
-  // --- Thread tracking: app_mention events ---
-
-  describe('thread tracking via app_mention events', () => {
-    it('sets activeThreadTs to event.ts for top-level @mentions', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> please help',
-        user: 'U_ALICE',
-        // No thread_ts — top-level @mention
-      });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000010.000001');
-    });
-
-    it('sets activeThreadTs to event.thread_ts for @mentions inside a thread', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000011.000001',        // reply timestamp
-        thread_ts: '1700000010.000000', // parent thread timestamp
-        text: '<@BOT_USER_123> what do you think?',
-        user: 'U_ALICE',
-      });
-
-      // Should reply in the existing thread, not start a new one
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000010.000000');
-    });
-
-    it('includes thread_ts in NewMessage from app_mention', async () => {
-      const opts = createTestOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000012.000001',
-        thread_ts: '1700000010.000000',
-        text: '<@BOT_USER_123> show me the status',
-        user: 'U_ALICE',
-      });
-
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        REGISTERED_JID,
-        expect.objectContaining({ thread_ts: '1700000010.000000' }),
-      );
-    });
-
-    it('does not deliver @mentions for unregistered channels', async () => {
-      const opts = createTestOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: 'C_UNREGISTERED',
-        ts: '1700000013.000001',
-        text: '<@BOT_USER_123> hey',
-        user: 'U_ALICE',
-      });
-
-      expect(opts.onMessage).not.toHaveBeenCalled();
-    });
-
-    it('@mention overrides previously tracked message thread', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      // First: a message sets the thread
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000001.000001', text: 'Regular message', user: 'U_ALICE' });
-
-      // Then: a @mention in a different thread overrides it
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000020.000001',
-        thread_ts: '1700000015.000000',
-        text: '<@BOT_USER_123> hey',
-        user: 'U_BOB',
-      });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000015.000000');
-    });
-
-    // --- PM agent @mention handling ---
-
-    it('uses extractPmMentionContext for PM agent @mentions', async () => {
-      const opts = createPmAgentOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      const { extractPmMentionContext } = await import('./slack-pm-mention.js');
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> please fix bug #42',
-        user: 'U_ALICE',
-      });
-
-      expect(extractPmMentionContext).toHaveBeenCalledWith(
-        expect.objectContaining({
-          text: '<@BOT_USER_123> please fix bug #42',
-          userId: 'U_ALICE',
-          channelId: CHANNEL_ID,
-          ts: '1700000010.000001',
-          botUserId: 'BOT_USER_123',
-        }),
-      );
-    });
-
-    it('uses formatPmMentionContent to build the message content for PM agents', async () => {
-      const opts = createPmAgentOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      const { formatPmMentionContent } = await import('./slack-pm-mention.js');
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> help me',
-        user: 'U_ALICE',
-      });
-
-      expect(formatPmMentionContent).toHaveBeenCalled();
-
-      // The formatted content should end up in onMessage
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        REGISTERED_JID,
-        expect.objectContaining({
-          content: '[PM @mention from Alice]\nhelp me',
-          sender_name: 'Alice',
-          thread_ts: '1700000010.000001',
-        }),
-      );
-    });
-
-    it('falls back to plain text when extractPmMentionContext throws', async () => {
-      const { extractPmMentionContext } = await import('./slack-pm-mention.js');
-      vi.mocked(extractPmMentionContext).mockRejectedValueOnce(new Error('Slack API down'));
-
-      const opts = createPmAgentOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> urgent help',
-        user: 'U_ALICE',
-      });
-
-      // Falls back to plain text content
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        REGISTERED_JID,
-        expect.objectContaining({
-          content: '<@BOT_USER_123> urgent help',
-          thread_ts: '1700000010.000001',
-        }),
-      );
-    });
-  });
-
-  describe('marketer approval flow', () => {
-    it('creates an approval trigger message when checkmark reaction is added to a marketer draft', async () => {
-      const opts = createMarketerOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      fakeClient.conversations.history.mockResolvedValue({
-        messages: [
-          {
-            ts: '1700000100.000001',
-            text: '*Marketer:* [DRAFT - x]\nDraft body\n\nReact with :white_check_mark: or reply "승인" to approve.',
-            bot_id: 'B_MARKETER',
-          },
-        ],
-      });
-
-      await triggerReaction({
-        type: 'reaction_added',
-        user: 'U_APPROVER',
-        reaction: 'white_check_mark',
-        item: {
-          type: 'message',
-          channel: CHANNEL_ID,
-          ts: '1700000100.000001',
-        },
-        event_ts: '1700000105.000001',
-      });
-
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        REGISTERED_JID,
-        expect.objectContaining({
-          sender: 'U_APPROVER',
-          thread_ts: '1700000100.000001',
-        }),
-      );
-      const msg = vi.mocked(opts.onMessage).mock.calls[0][1];
-      expect(msg.content).toContain('@marketer');
-      expect(msg.content).toContain('승인');
-    });
-
-    it('normalizes 승인 replies in draft threads into approval trigger messages', async () => {
-      const opts = createMarketerOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      fakeClient.conversations.replies.mockResolvedValue({
-        messages: [
-          {
-            ts: '1700000200.000001',
-            text: '*Marketer:* [DRAFT - linkedin]\nDraft body\n\nReact with :white_check_mark: or reply "승인" to approve.',
-            bot_id: 'B_MARKETER',
-            thread_ts: '1700000200.000001',
-          },
-        ],
-      });
-
-      await triggerMessage({
-        channel: CHANNEL_ID,
-        ts: '1700000201.000001',
-        thread_ts: '1700000200.000001',
-        text: '승인',
-        user: 'U_APPROVER',
-      });
-
-      const msg = vi.mocked(opts.onMessage).mock.calls[0][1];
-      expect(msg.content).toContain('@marketer');
-      expect(msg.content).toContain('승인');
-      expect(msg.thread_ts).toBe('1700000200.000001');
-    });
-
-    it('normalizes approve replies in draft threads into approval trigger messages', async () => {
-      const opts = createMarketerOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      fakeClient.conversations.replies.mockResolvedValue({
-        messages: [
-          {
-            ts: '1700000300.000001',
-            text: '*Marketer:* [DRAFT - threads]\nDraft body\n\nReact with :white_check_mark: or reply "승인" to approve.',
-            bot_id: 'B_MARKETER',
-            thread_ts: '1700000300.000001',
-          },
-        ],
-      });
-
-      await triggerMessage({
-        channel: CHANNEL_ID,
-        ts: '1700000301.000001',
-        thread_ts: '1700000300.000001',
-        text: 'approve',
-        user: 'U_APPROVER',
-      });
-
-      const msg = vi.mocked(opts.onMessage).mock.calls[0][1];
-      expect(msg.content).toContain('@marketer');
-      expect(msg.content.toLowerCase()).toContain('approve');
-      expect(msg.thread_ts).toBe('1700000300.000001');
-    });
-  });
-
-  // --- sendMessage: thread-aware response posting (core of Sub-AC 2.3) ---
+  // --- sendMessage: thread-aware response posting ---
 
   describe('sendMessage — thread-aware response posting', () => {
     it('posts to channel without thread_ts when no active thread tracked', async () => {
@@ -708,10 +330,8 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      // Incoming message sets the thread
       await triggerMessage({ channel: CHANNEL_ID, ts: '1700000010.000001', text: 'Hi', user: 'U_ALICE' });
 
-      // Agent responds
       await channel.sendMessage(REGISTERED_JID, 'Hello!');
 
       expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
@@ -723,83 +343,22 @@ describe('SlackChannel', () => {
       );
     });
 
-    it('replies in thread when triggered by a top-level @mention', async () => {
+    it('uses group name as assistant label', async () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> help me',
-        user: 'U_ALICE',
-      });
+      await channel.sendMessage(REGISTERED_JID, 'Response message');
 
-      await channel.sendMessage(REGISTERED_JID, 'Sure, I can help!');
-
-      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: CHANNEL_ID,
-          thread_ts: '1700000010.000001',
-          text: expect.stringContaining('Sure, I can help!'),
-        }),
-      );
-    });
-
-    it('replies in the parent thread when triggered by a threaded @mention', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      // @mention inside an existing thread
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000011.000001',
-        thread_ts: '1700000010.000000', // parent thread
-        text: '<@BOT_USER_123> update the status',
-        user: 'U_ALICE',
-      });
-
-      await channel.sendMessage(REGISTERED_JID, 'Status: all good');
-
-      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: CHANNEL_ID,
-          thread_ts: '1700000010.000000', // replies in parent thread
-        }),
-      );
-    });
-
-    it('PM agent @mention triggers thread reply with rich context content', async () => {
-      const opts = createPmAgentOpts();
-      const channel = new SlackChannel(opts);
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: '<@BOT_USER_123> what is the deployment status?',
-        user: 'U_ALICE',
-      });
-
-      // Simulate the PM agent processing and responding
-      await channel.sendMessage(REGISTERED_JID, 'Deployment is running. 3 of 5 pods ready.');
-
-      // Response must go into the originating thread
-      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: CHANNEL_ID,
-          thread_ts: '1700000010.000001',
-          text: expect.stringContaining('Deployment is running'),
-        }),
-      );
+      const call = fakeClient.chat.postMessage.mock.calls[0][0];
+      expect(call.text).toMatch(/^\*Test Channel:\*/);
     });
 
     it('explicit threadTs overrides auto-tracked thread', async () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      await triggerMention({ channel: CHANNEL_ID, ts: '1700000010.000001', text: '<@BOT_USER_123> hi', user: 'U_ALICE' });
+      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000010.000001', text: 'hi', user: 'U_ALICE' });
 
-      // Caller explicitly targets a different thread
       await channel.sendMessage(REGISTERED_JID, 'Different thread reply', '1700000099.000001');
 
       expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
@@ -820,28 +379,6 @@ describe('SlackChannel', () => {
           text: expect.stringContaining('Thread reply'),
         }),
       );
-    });
-
-    it('uses assistant label from registered group trigger', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await channel.sendMessage(REGISTERED_JID, 'Response message');
-
-      const call = fakeClient.chat.postMessage.mock.calls[0][0];
-      // Trigger is '@Andy' → label is 'Andy'
-      expect(call.text).toMatch(/^\*Andy:\*/);
-    });
-
-    it('appends the marketer approval instruction for draft messages', async () => {
-      const channel = new SlackChannel(createMarketerOpts());
-      await connectChannel(channel);
-
-      await channel.sendMessage(REGISTERED_JID, '[DRAFT - x]\nLaunch post draft');
-
-      const call = fakeClient.chat.postMessage.mock.calls[0][0];
-      expect(call.text).toContain('[DRAFT - x]');
-      expect(call.text).toContain('React with :white_check_mark: or reply "승인" to approve.');
     });
 
     it('does not send messages when formatOutbound returns empty string', async () => {
@@ -870,10 +407,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      await triggerMention({
+      await triggerMessage({
         channel: CHANNEL_ID,
         ts: '1700000010.000001',
-        text: '<@BOT_USER_123> hi',
+        text: 'hi',
         user: 'U_ALICE',
       });
 
@@ -913,20 +450,6 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
       expect(channel.getActiveThreadTs('slack:COTHER')).toBeUndefined();
-    });
-
-    it('returns the thread_ts after an @mention arrives', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMention({
-        channel: CHANNEL_ID,
-        ts: '1700000001.000001',
-        text: '<@BOT_USER_123> hello',
-        user: 'U_ALICE',
-      });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
     });
   });
 
@@ -991,7 +514,6 @@ describe('SlackChannel', () => {
         channel: CHANNEL_ID,
         ts: '1700000001.000001',
         user: 'U_ALICE',
-        // no text, no files
       });
 
       expect(opts.onMessage).not.toHaveBeenCalled();

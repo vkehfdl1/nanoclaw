@@ -5,7 +5,7 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
+import { AgentGateway, NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
 
 let db: Database.Database;
 
@@ -41,7 +41,9 @@ function ensureMainRegistration(): void {
     name: ASSISTANT_NAME,
     folder: MAIN_FOLDER,
     trigger: `@${ASSISTANT_NAME}`,
+    aliases: ['dobby', '도비'],
     requiresTrigger: false,
+    gateway: { rules: [{ match: 'self_mention' }] },
     role: 'main',
     containerConfig: {
       model: 'claude-opus-4-6',
@@ -54,7 +56,14 @@ function ensurePmAutoragRegistration(): void {
     name: 'Young-gu',
     folder: PM_AUTORAG_FOLDER,
     trigger: '@young-gu',
+    aliases: ['young-gu', '영구'],
     requiresTrigger: false,
+    gateway: {
+      rules: [
+        { match: 'self_mention' },
+        { match: 'cross_agent', fromAgents: ['main'] },
+      ],
+    },
     role: 'pm-agent',
     containerConfig: {
       model: 'claude-opus-4-6',
@@ -88,7 +97,14 @@ function ensureMarketerRegistration(): void {
     name: 'Marketer',
     folder: MARKETER_FOLDER,
     trigger: '@marketer',
+    aliases: ['marketer', '마케터'],
     requiresTrigger: false,
+    gateway: {
+      rules: [
+        { channel: [MARKETER_CHANNEL_JID], match: 'any_message' },
+        { match: 'self_mention' },
+      ],
+    },
     role: 'marketer',
     containerConfig: {
       model: 'claude-sonnet-4-6',
@@ -107,7 +123,9 @@ function ensureMarketerRegistration(): void {
     name: ASSISTANT_NAME,
     folder: MAIN_FOLDER,
     trigger: `@${ASSISTANT_NAME}`,
+    aliases: ['dobby', '도비'],
     requiresTrigger: true,
+    gateway: { rules: [{ match: 'self_mention' }] },
     role: 'main',
     containerConfig: {
       model: 'claude-opus-4-6',
@@ -120,7 +138,14 @@ function ensureTodomonRegistration(): void {
     name: 'Todomon',
     folder: TODOMON_FOLDER,
     trigger: '@todomon',
+    aliases: ['todomon', '투두몬'],
     requiresTrigger: false,
+    gateway: {
+      rules: [
+        { channel: [TODOMON_CHANNEL_JID], match: 'any_message' },
+        { match: 'self_mention' },
+      ],
+    },
     role: 'todomon',
     containerConfig: {
       model: 'claude-sonnet-4-6',
@@ -255,9 +280,7 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`,
     );
-    // Backfill from JID patterns
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`);
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`);
+    // Backfill from known JID patterns where possible
     database.exec(`UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`);
     database.exec(`UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`);
   } catch {
@@ -277,6 +300,24 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(
       `ALTER TABLE registered_groups ADD COLUMN role TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add aliases column (JSON array) for declarative alias matching
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN aliases TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add gateway column (JSON object) for declarative gateway rules
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN gateway TEXT`,
     );
   } catch {
     /* column already exists */
@@ -312,6 +353,8 @@ function createSchema(database: Database.Database): void {
           container_config TEXT,
           requires_trigger INTEGER DEFAULT 1,
           role TEXT,
+          aliases TEXT,
+          gateway TEXT,
           PRIMARY KEY (jid, folder)
         );
         INSERT OR REPLACE INTO registered_groups_v2 (
@@ -322,7 +365,9 @@ function createSchema(database: Database.Database): void {
           added_at,
           container_config,
           requires_trigger,
-          role
+          role,
+          aliases,
+          gateway
         )
         SELECT
           jid,
@@ -332,7 +377,9 @@ function createSchema(database: Database.Database): void {
           added_at,
           container_config,
           requires_trigger,
-          role
+          role,
+          CASE WHEN aliases IS NOT NULL THEN aliases ELSE NULL END,
+          CASE WHEN gateway IS NOT NULL THEN gateway ELSE NULL END
         FROM registered_groups
         ORDER BY added_at, folder;
         DROP TABLE registered_groups;
@@ -503,7 +550,7 @@ export function storeMessage(msg: NewMessage): void {
 }
 
 /**
- * Store a message directly (for non-WhatsApp channels that don't use Baileys proto).
+ * Store a message directly.
  */
 export function storeMessageDirect(msg: {
   id: string;
@@ -775,6 +822,8 @@ type RegisteredGroupRow = {
   container_config: string | null;
   requires_trigger: number | null;
   role: string | null;
+  aliases: string | null;
+  gateway: string | null;
 };
 
 function mapRegisteredGroupRow(
@@ -788,16 +837,49 @@ function mapRegisteredGroupRow(
     return undefined;
   }
 
+  let aliases: string[];
+  try {
+    aliases = row.aliases ? JSON.parse(row.aliases) : [];
+  } catch {
+    aliases = [];
+  }
+  // Fallback: derive aliases from trigger if not stored
+  if (aliases.length === 0) {
+    const trigger = row.trigger_pattern?.trim();
+    if (trigger) {
+      const label = trigger.startsWith('@') ? trigger.slice(1) : trigger;
+      if (label) aliases = [label];
+    }
+  }
+
+  let gateway: AgentGateway;
+  try {
+    gateway = row.gateway ? JSON.parse(row.gateway) : { rules: [] };
+  } catch {
+    gateway = { rules: [] };
+  }
+  // Fallback: derive gateway from requiresTrigger if not stored
+  if (gateway.rules.length === 0) {
+    const requiresTrigger = row.requires_trigger === null ? undefined : row.requires_trigger === 1;
+    if (requiresTrigger === false) {
+      gateway = { rules: [{ match: 'any_message' }] };
+    } else {
+      gateway = { rules: [{ match: 'self_mention' }] };
+    }
+  }
+
   return {
     jid: row.jid,
     name: row.name,
     folder: row.folder,
     trigger: row.trigger_pattern,
+    aliases,
     added_at: row.added_at,
     containerConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
     requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    gateway,
     role: row.role ?? undefined,
   };
 }
@@ -822,15 +904,17 @@ export function setRegisteredGroup(
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role, aliases, gateway)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(jid, folder) DO UPDATE SET
        name = excluded.name,
        trigger_pattern = excluded.trigger_pattern,
        added_at = excluded.added_at,
        container_config = excluded.container_config,
        requires_trigger = excluded.requires_trigger,
-       role = excluded.role`,
+       role = excluded.role,
+       aliases = excluded.aliases,
+       gateway = excluded.gateway`,
   ).run(
     jid,
     group.name,
@@ -840,6 +924,8 @@ export function setRegisteredGroup(
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.role ?? null,
+    group.aliases?.length ? JSON.stringify(group.aliases) : null,
+    group.gateway?.rules?.length ? JSON.stringify(group.gateway) : null,
   );
 }
 

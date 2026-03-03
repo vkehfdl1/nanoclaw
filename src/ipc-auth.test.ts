@@ -28,21 +28,27 @@ const MAIN_GROUP: RegisteredGroup = {
   name: 'Main',
   folder: 'main',
   trigger: 'always',
+  aliases: ['main'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'any_message' }] },
 };
 
 const OTHER_GROUP: RegisteredGroup = {
   name: 'Other',
   folder: 'other-group',
   trigger: '@Andy',
+  aliases: ['andy'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'self_mention' }] },
 };
 
 const THIRD_GROUP: RegisteredGroup = {
   name: 'Third',
   folder: 'third-group',
   trigger: '@Andy',
+  aliases: ['andy'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'self_mention' }] },
 };
 
 let groups: Record<string, RegisteredGroup>;
@@ -716,11 +722,11 @@ describe('send_agent_message', () => {
 
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0].jid).toBe('third@g.us');
-    expect(sentMessages[0].text).toContain('[from @Andy]');
+    expect(sentMessages[0].text).toContain('[from @andy]');
 
     const stored = getMessagesSince('third@g.us', '', 'Andy');
     expect(stored).toHaveLength(1);
-    expect(stored[0].content).toContain('[from @Andy]');
+    expect(stored[0].content).toContain('[from @andy]');
     expect(stored[0].content).toContain('Please review this PR');
   });
 

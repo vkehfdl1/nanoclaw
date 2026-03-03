@@ -132,7 +132,11 @@ function normalizeAgentFolder(value: string): string {
   return value.trim().replace(/^@+/, '');
 }
 
-function toAgentMention(trigger: string | undefined, folder: string): string {
+function toAgentMention(aliases: string[] | undefined, trigger: string | undefined, folder: string): string {
+  if (aliases && aliases.length > 0) {
+    const alias = aliases[0];
+    return alias.startsWith('@') ? alias : `@${alias}`;
+  }
   const trimmed = trigger?.trim();
   if (!trimmed) return `@${folder}`;
   return trimmed.startsWith('@') ? trimmed : `@${trimmed}`;
@@ -143,7 +147,7 @@ function resolveAgentMention(
   registeredGroups: Record<string, RegisteredGroup>,
 ): string {
   const group = Object.values(registeredGroups).find((g) => g.folder === folder);
-  return toAgentMention(group?.trigger, folder);
+  return toAgentMention(group?.aliases, group?.trigger, folder);
 }
 
 /** @internal - for tests only */
@@ -539,7 +543,9 @@ export async function processTaskIpc(
     name?: string;
     folder?: string;
     trigger?: string;
+    aliases?: string[];
     requiresTrigger?: boolean;
+    gateway?: RegisteredGroup['gateway'];
     containerConfig?: RegisteredGroup['containerConfig'];
     role?: string;
   },
@@ -769,13 +775,22 @@ export async function processTaskIpc(
           );
           break;
         }
+        // Auto-convert trigger to aliases if aliases not provided
+        const aliases = data.aliases ?? [data.trigger.replace(/^@/, '')];
+        const gateway = data.gateway ?? {
+          rules: [data.requiresTrigger === false
+            ? { match: 'any_message' as const }
+            : { match: 'self_mention' as const }],
+        };
         deps.registerGroup(data.jid, {
           name: data.name,
           folder: data.folder,
           trigger: data.trigger,
+          aliases,
           added_at: new Date().toISOString(),
           containerConfig: data.containerConfig,
           requiresTrigger: data.requiresTrigger,
+          gateway,
           role: data.role,
         });
       } else {
@@ -852,7 +867,7 @@ export async function processTaskIpc(
       const targetRegistration = getAgentsByChannel(targetJid).find(
         (g) => g.folder === targetAgent,
       );
-      const targetMention = toAgentMention(targetRegistration?.trigger, targetAgent);
+      const targetMention = toAgentMention(targetRegistration?.aliases, targetRegistration?.trigger, targetAgent);
       const addressedText = messageText.toLowerCase().startsWith(targetMention.toLowerCase())
         ? messageText
         : `${targetMention} ${messageText}`;

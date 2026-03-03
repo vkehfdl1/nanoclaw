@@ -81,15 +81,6 @@ export const MAX_PING_PONG_TURNS = Math.max(
   parseInt(process.env.MAX_PING_PONG_TURNS || '5', 10) || 5,
 );
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
-  'i',
-);
-
 // Timezone for scheduled tasks and container runtime local time.
 // Defaults to Asia/Seoul; can still be overridden via TZ.
 export const TIMEZONE = process.env.TZ || 'Asia/Seoul';

@@ -41,13 +41,29 @@ export interface ContainerConfig {
   envVars?: Record<string, string>;
 }
 
+export interface GatewayRule {
+  channel?: string[];       // Only match in these channels (AND with other fields)
+  match?: 'self_mention' | 'cross_agent' | 'any_message';
+  keywords?: string[];      // At least one keyword must be present (OR within, AND with other fields)
+  fromAgents?: string[];    // cross_agent match only: restrict to these source agents
+}
+
+export interface AgentGateway {
+  rules: GatewayRule[];     // Rules are evaluated with OR (any match triggers)
+  excludeBotMessages?: boolean; // Default: true
+}
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
+  /** @deprecated Use aliases instead */
   trigger: string;
+  aliases: string[];
   added_at: string;
   containerConfig?: ContainerConfig;
-  requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  /** @deprecated Use gateway instead */
+  requiresTrigger?: boolean;
+  gateway: AgentGateway;
   /**
    * Agent role identifier. Use 'pm-agent' for project manager agents that
    * operate in Slack channels. Other values: 'marketer', 'todomon', etc.
@@ -122,7 +138,7 @@ export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
-// channels that sync names separately (WhatsApp syncGroupMetadata) omit it.
+// channels that sync names separately can omit it.
 export type OnChatMetadata = (
   chatJid: string,
   timestamp: string,

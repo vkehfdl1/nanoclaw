@@ -93,7 +93,9 @@ const testGroup: RegisteredGroup = {
   name: 'Test Group',
   folder: 'test-group',
   trigger: '@Andy',
+  aliases: ['andy'],
   added_at: new Date().toISOString(),
+  gateway: { rules: [{ match: 'self_mention' }] },
 };
 
 const testInput = {

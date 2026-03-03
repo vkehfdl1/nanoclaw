@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from './config.js';
+import { ASSISTANT_NAME } from './config.js';
+import { evaluateGateway } from './gateway.js';
 import {
   escapeXml,
   formatMessages,
@@ -8,16 +9,28 @@ import {
   normalizeSlackMarkdown,
   stripInternalTags,
 } from './router.js';
-import { NewMessage } from './types.js';
+import { NewMessage, RegisteredGroup } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
   return {
     id: '1',
-    chat_jid: 'group@g.us',
-    sender: '123@s.whatsapp.net',
+    chat_jid: 'slack:C12345678',
+    sender: 'U12345678',
     sender_name: 'Alice',
     content: 'hello',
     timestamp: '2024-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function makeAgent(overrides: Partial<RegisteredGroup> = {}): RegisteredGroup {
+  return {
+    name: ASSISTANT_NAME,
+    folder: 'main',
+    trigger: `@${ASSISTANT_NAME}`,
+    aliases: [ASSISTANT_NAME.toLowerCase()],
+    added_at: '2024-01-01T00:00:00.000Z',
+    gateway: { rules: [{ match: 'self_mention' }] },
     ...overrides,
   };
 }
@@ -97,44 +110,6 @@ describe('formatMessages', () => {
   it('handles empty array', () => {
     const result = formatMessages([]);
     expect(result).toBe('<messages>\n\n</messages>');
-  });
-});
-
-// --- TRIGGER_PATTERN ---
-
-describe('TRIGGER_PATTERN', () => {
-  const name = ASSISTANT_NAME;
-  const lower = name.toLowerCase();
-  const upper = name.toUpperCase();
-
-  it('matches @name at start of message', () => {
-    expect(TRIGGER_PATTERN.test(`@${name} hello`)).toBe(true);
-  });
-
-  it('matches case-insensitively', () => {
-    expect(TRIGGER_PATTERN.test(`@${lower} hello`)).toBe(true);
-    expect(TRIGGER_PATTERN.test(`@${upper} hello`)).toBe(true);
-  });
-
-  it('does not match when not at start of message', () => {
-    expect(TRIGGER_PATTERN.test(`hello @${name}`)).toBe(false);
-  });
-
-  it('does not match partial name like @NameExtra (word boundary)', () => {
-    expect(TRIGGER_PATTERN.test(`@${name}extra hello`)).toBe(false);
-  });
-
-  it('matches with word boundary before apostrophe', () => {
-    expect(TRIGGER_PATTERN.test(`@${name}'s thing`)).toBe(true);
-  });
-
-  it('matches @name alone (end of string is a word boundary)', () => {
-    expect(TRIGGER_PATTERN.test(`@${name}`)).toBe(true);
-  });
-
-  it('matches with leading whitespace after trim', () => {
-    // The actual usage trims before testing: TRIGGER_PATTERN.test(m.content.trim())
-    expect(TRIGGER_PATTERN.test(`@${name} hey`.trim())).toBe(true);
   });
 });
 
@@ -266,54 +241,42 @@ describe('formatOutbound', () => {
   });
 });
 
-// --- Trigger gating with requiresTrigger flag ---
+// --- Gateway evaluation (replaces TRIGGER_PATTERN tests) ---
 
-describe('trigger gating (requiresTrigger interaction)', () => {
-  // Replicates the exact logic from processGroupMessages and startMessageLoop:
-  //   if (!isMainGroup && group.requiresTrigger !== false) { check trigger }
-  function shouldRequireTrigger(
-    isMainGroup: boolean,
-    requiresTrigger: boolean | undefined,
-  ): boolean {
-    return !isMainGroup && requiresTrigger !== false;
-  }
-
-  function shouldProcess(
-    isMainGroup: boolean,
-    requiresTrigger: boolean | undefined,
-    messages: NewMessage[],
-  ): boolean {
-    if (!shouldRequireTrigger(isMainGroup, requiresTrigger)) return true;
-    return messages.some((m) => TRIGGER_PATTERN.test(m.content.trim()));
-  }
-
-  it('main group always processes (no trigger needed)', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(true, undefined, msgs)).toBe(true);
+describe('gateway evaluation (replaces trigger gating)', () => {
+  it('self_mention agent: processes when alias present', () => {
+    const agent = makeAgent();
+    const msg = makeMsg({ content: `${ASSISTANT_NAME.toLowerCase()} do something` });
+    expect(evaluateGateway(msg, agent, 'slack:C12345678')).toBe(true);
   });
 
-  it('main group processes even with requiresTrigger=true', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(true, true, msgs)).toBe(true);
+  it('self_mention agent: does not process without alias', () => {
+    const agent = makeAgent();
+    const msg = makeMsg({ content: 'hello no trigger' });
+    expect(evaluateGateway(msg, agent, 'slack:C12345678')).toBe(false);
   });
 
-  it('non-main group with requiresTrigger=undefined requires trigger (defaults to true)', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(false, undefined, msgs)).toBe(false);
+  it('any_message agent: always processes', () => {
+    const agent = makeAgent({
+      gateway: { rules: [{ match: 'any_message' }] },
+    });
+    const msg = makeMsg({ content: 'hello no trigger' });
+    expect(evaluateGateway(msg, agent, 'slack:C12345678')).toBe(true);
   });
 
-  it('non-main group with requiresTrigger=true requires trigger', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(false, true, msgs)).toBe(false);
+  it('channel-scoped any_message: only processes in matching channel', () => {
+    const agent = makeAgent({
+      gateway: { rules: [{ channel: ['slack:C111'], match: 'any_message' }] },
+    });
+    expect(evaluateGateway(makeMsg({ content: 'hello' }), agent, 'slack:C111')).toBe(true);
+    expect(evaluateGateway(makeMsg({ content: 'hello' }), agent, 'slack:C222')).toBe(false);
   });
 
-  it('non-main group with requiresTrigger=true processes when trigger present', () => {
-    const msgs = [makeMsg({ content: `@${ASSISTANT_NAME} do something` })];
-    expect(shouldProcess(false, true, msgs)).toBe(true);
-  });
-
-  it('non-main group with requiresTrigger=false always processes (no trigger needed)', () => {
-    const msgs = [makeMsg({ content: 'hello no trigger' })];
-    expect(shouldProcess(false, false, msgs)).toBe(true);
+  it('excludes bot messages by default', () => {
+    const agent = makeAgent({
+      gateway: { rules: [{ match: 'any_message' }] },
+    });
+    const botMsg = makeMsg({ is_bot_message: true });
+    expect(evaluateGateway(botMsg, agent, 'slack:C12345678')).toBe(false);
   });
 });
