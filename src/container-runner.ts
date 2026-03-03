@@ -77,6 +77,10 @@ function getTmpfsOverlayPaths(mount: VolumeMount): string[] {
   for (const rawPattern of mount.excludePatterns) {
     const pattern = normalizeExcludePattern(rawPattern);
     if (!pattern) continue;
+    // Docker cannot create tmpfs mountpoints on top of a read-only bind mount
+    // when the target path does not already exist. Skip absent paths.
+    const hostOverlayPath = path.join(mount.hostPath, pattern);
+    if (!fs.existsSync(hostOverlayPath)) continue;
     overlays.add(path.posix.join(mount.containerPath, pattern));
   }
   return [...overlays];

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { spawn } from 'child_process';
+import fs from 'fs';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -205,6 +206,13 @@ describe('container-runner timeout behavior', () => {
   });
 
   it('adds tmpfs overlays for additional mount excludePatterns', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => {
+      const p = String(filePath);
+      return p.endsWith('/node_modules') ||
+        p.endsWith('/.venv') ||
+        p.endsWith('/.git/objects');
+    });
+
     vi.mocked(validateAdditionalMounts).mockReturnValueOnce([
       {
         hostPath: '/host/repos/autorag-research',

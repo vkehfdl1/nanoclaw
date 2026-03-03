@@ -10,6 +10,7 @@ import {
 } from './config.js';
 import { ContainerOutput, runContainerAgent, writeTasksSnapshot } from './container-runner.js';
 import {
+  getAgentsByChannel,
   getAllTasks,
   getDueTasks,
   getTaskById,
@@ -64,13 +65,25 @@ async function runTask(
   );
 
   const groups = deps.registeredGroups();
-  const group = Object.values(groups).find(
+  const groupsInChat = getAgentsByChannel(task.chat_jid);
+  const groupFromChat = groupsInChat.find(
     (g) => g.folder === task.group_folder,
   );
+  // Fallback to in-memory state in case chat_jid was changed but folder remains valid.
+  const groupFromMemory = Object.values(groups).find(
+    (g) => g.folder === task.group_folder,
+  );
+  const group = groupFromChat ?? groupFromMemory;
 
   if (!group) {
     logger.error(
-      { taskId: task.id, groupFolder: task.group_folder },
+      {
+        taskId: task.id,
+        groupFolder: task.group_folder,
+        chatJid: task.chat_jid,
+        knownFoldersInChat: groupsInChat.map((g) => g.folder),
+        knownFoldersInMemory: Object.values(groups).map((g) => g.folder),
+      },
       'Group not found for task',
     );
     logTaskRun({
