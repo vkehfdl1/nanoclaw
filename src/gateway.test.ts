@@ -86,30 +86,6 @@ describe('evaluateRule', () => {
     expect(evaluateRule(rule, makeMsg(), agent, 'slack:C222')).toBe(false);
   });
 
-  it('cross_agent passes for cross-agent messages', () => {
-    const rule: GatewayRule = { match: 'cross_agent', fromAgents: ['main'] };
-    const msg = makeMsg({
-      is_cross_agent: true,
-      agent_source: 'main',
-    });
-    expect(evaluateRule(rule, msg, agent, 'slack:C12345678')).toBe(true);
-  });
-
-  it('cross_agent fails for non-cross-agent messages', () => {
-    const rule: GatewayRule = { match: 'cross_agent' };
-    const msg = makeMsg();
-    expect(evaluateRule(rule, msg, agent, 'slack:C12345678')).toBe(false);
-  });
-
-  it('cross_agent with fromAgents filters by source agent', () => {
-    const rule: GatewayRule = { match: 'cross_agent', fromAgents: ['marketer'] };
-    const msg = makeMsg({
-      is_cross_agent: true,
-      agent_source: 'main',
-    });
-    expect(evaluateRule(rule, msg, agent, 'slack:C12345678')).toBe(false);
-  });
-
   it('keywords filter requires at least one keyword present', () => {
     const rule: GatewayRule = { keywords: ['urgent', 'deploy'] };
     expect(evaluateRule(rule, makeMsg({ content: 'urgent fix needed' }), agent, 'slack:C12345678')).toBe(true);
@@ -159,7 +135,7 @@ describe('evaluateGateway', () => {
     expect(evaluateGateway(makeMsg({ content: 'hello' }), agent, 'slack:C999')).toBe(false);
   });
 
-  it('excludes bot messages by default', () => {
+  it('excludes bot messages by default (no alias mention)', () => {
     const agent = makeAgent({
       gateway: { rules: [{ match: 'any_message' }] },
     });
@@ -167,16 +143,42 @@ describe('evaluateGateway', () => {
     expect(evaluateGateway(botMsg, agent, 'slack:C12345678')).toBe(false);
   });
 
-  it('allows cross-agent bot messages through', () => {
+  it('allows bot messages with alias mention through (default excludeBotMessages)', () => {
     const agent = makeAgent({
-      gateway: { rules: [{ match: 'cross_agent' }] },
+      gateway: { rules: [{ match: 'any_message' }] },
     });
-    const crossMsg = makeMsg({
+    const botMsg = makeMsg({
       is_bot_message: true,
-      is_cross_agent: true,
-      agent_source: 'marketer',
+      content: '*Marketer:* 도비 이거 봐봐',
+      agent_source: 'Marketer',
     });
-    expect(evaluateGateway(crossMsg, agent, 'slack:C12345678')).toBe(true);
+    expect(evaluateGateway(botMsg, agent, 'slack:C12345678')).toBe(true);
+  });
+
+  it('blocks self-loop: bot message from same agent is rejected', () => {
+    const agent = makeAgent({
+      name: 'Dobby',
+      gateway: { rules: [{ match: 'any_message' }] },
+    });
+    const selfMsg = makeMsg({
+      is_bot_message: true,
+      content: '*Dobby:* some output',
+      agent_source: 'Dobby',
+    });
+    expect(evaluateGateway(selfMsg, agent, 'slack:C12345678')).toBe(false);
+  });
+
+  it('self-loop check is case-insensitive', () => {
+    const agent = makeAgent({
+      name: 'Dobby',
+      gateway: { rules: [{ match: 'any_message' }] },
+    });
+    const selfMsg = makeMsg({
+      is_bot_message: true,
+      content: '*dobby:* some output',
+      agent_source: 'dobby',
+    });
+    expect(evaluateGateway(selfMsg, agent, 'slack:C12345678')).toBe(false);
   });
 
   it('allows bot messages when excludeBotMessages is false', () => {
@@ -205,44 +207,38 @@ describe('evaluateGateway', () => {
       expect(evaluateGateway(makeMsg({ content: 'just chatting' }), dobby, 'slack:C0AH91957U0')).toBe(false);
     });
 
-    it('pm-autorag: responds to self_mention and cross_agent from main only', () => {
+    it('pm-autorag: responds to self_mention only', () => {
       const pm = makeAgent({
         name: 'Young-gu',
         folder: 'pm-autorag',
         aliases: ['young-gu', '영구'],
         gateway: {
-          rules: [
-            { match: 'self_mention' },
-            { match: 'cross_agent', fromAgents: ['main'] },
-          ],
+          rules: [{ match: 'self_mention' }],
         },
       });
 
-      // In its channel: needs mention (no more any_message)
+      // Needs mention
       expect(evaluateGateway(makeMsg({ content: 'hello' }), pm, 'slack:C09RELR4R9N')).toBe(false);
       expect(evaluateGateway(makeMsg({ content: '영구야 이거 봐봐' }), pm, 'slack:C09RELR4R9N')).toBe(true);
-      // Outside: needs mention
-      expect(evaluateGateway(makeMsg({ content: 'hello' }), pm, 'slack:C0AH91957U0')).toBe(false);
-      expect(evaluateGateway(makeMsg({ content: '영구야 이거 봐봐' }), pm, 'slack:C0AH91957U0')).toBe(true);
-      // Cross-agent from main
+      // Bot message with alias mention → triggers
       expect(evaluateGateway(
-        makeMsg({ is_cross_agent: true, agent_source: 'main' }),
+        makeMsg({ is_bot_message: true, content: '*Dobby:* 영구 이거 좀 봐줘', agent_source: 'Dobby' }),
         pm,
-        'slack:C0AH91957U0',
+        'slack:C09RELR4R9N',
       )).toBe(true);
-      // Cross-agent from marketer (not in fromAgents)
+      // Bot message without alias → does not trigger
       expect(evaluateGateway(
-        makeMsg({ is_cross_agent: true, agent_source: 'marketer' }),
+        makeMsg({ is_bot_message: true, content: '*Dobby:* hello', agent_source: 'Dobby' }),
         pm,
-        'slack:C0AH91957U0',
+        'slack:C09RELR4R9N',
       )).toBe(false);
     });
 
-    it('marketer: responds to any_message in its channel, self_mention elsewhere', () => {
+    it('홍명보 (marketer): responds to any_message in its channel, self_mention elsewhere', () => {
       const marketer = makeAgent({
-        name: 'Marketer',
+        name: '홍명보',
         folder: 'marketer',
-        aliases: ['marketer', '마케터'],
+        aliases: ['marketer', '홍명보', '명보'],
         gateway: {
           rules: [
             { channel: ['slack:C0AJ9U1DB25'], match: 'any_message' },
@@ -253,7 +249,7 @@ describe('evaluateGateway', () => {
 
       expect(evaluateGateway(makeMsg({ content: 'hello' }), marketer, 'slack:C0AJ9U1DB25')).toBe(true);
       expect(evaluateGateway(makeMsg({ content: 'hello' }), marketer, 'slack:C999')).toBe(false);
-      expect(evaluateGateway(makeMsg({ content: '마케터 도와줘' }), marketer, 'slack:C999')).toBe(true);
+      expect(evaluateGateway(makeMsg({ content: '명보 도와줘' }), marketer, 'slack:C999')).toBe(true);
     });
 
     it('todomon: responds to any_message in its channel, self_mention elsewhere', () => {

@@ -38,9 +38,9 @@ function ensureDefaultRegisteredGroup(
 
 function ensureMainRegistration(): void {
   ensureDefaultRegisteredGroup(MAIN_CHANNEL_JID, {
-    name: ASSISTANT_NAME,
+    name: '도비',
     folder: MAIN_FOLDER,
-    trigger: `@${ASSISTANT_NAME}`,
+    trigger: '@도비',
     aliases: ['dobby', '도비'],
     requiresTrigger: false,
     gateway: { rules: [{ match: 'self_mention' }] },
@@ -53,16 +53,13 @@ function ensureMainRegistration(): void {
 
 function ensurePmAutoragRegistration(): void {
   ensureDefaultRegisteredGroup(PM_AUTORAG_CHANNEL_JID, {
-    name: 'Young-gu',
+    name: '영구',
     folder: PM_AUTORAG_FOLDER,
-    trigger: '@young-gu',
+    trigger: '@영구',
     aliases: ['young-gu', '영구'],
     requiresTrigger: false,
     gateway: {
-      rules: [
-        { match: 'self_mention' },
-        { match: 'cross_agent', fromAgents: ['main'] },
-      ],
+      rules: [{ match: 'self_mention' }],
     },
     role: 'pm-agent',
     containerConfig: {
@@ -92,12 +89,12 @@ function ensurePmAutoragRegistration(): void {
 }
 
 function ensureMarketerRegistration(): void {
-  // Marketer: responds to all messages in its channel
+  // 홍명보 (formerly Marketer): responds to all messages in its channel
   ensureDefaultRegisteredGroup(MARKETER_CHANNEL_JID, {
-    name: 'Marketer',
+    name: '홍명보',
     folder: MARKETER_FOLDER,
-    trigger: '@marketer',
-    aliases: ['marketer', '마케터'],
+    trigger: '@홍명보',
+    aliases: ['marketer', '홍명보', '명보'],
     requiresTrigger: false,
     gateway: {
       rules: [
@@ -118,11 +115,11 @@ function ensureMarketerRegistration(): void {
     },
   });
 
-  // Dobby also present in marketer channel (responds when @mentioned)
+  // 도비 also present in marketer channel (responds when @mentioned)
   ensureDefaultRegisteredGroup(MARKETER_CHANNEL_JID, {
-    name: ASSISTANT_NAME,
+    name: '도비',
     folder: MAIN_FOLDER,
-    trigger: `@${ASSISTANT_NAME}`,
+    trigger: '@도비',
     aliases: ['dobby', '도비'],
     requiresTrigger: true,
     gateway: { rules: [{ match: 'self_mention' }] },
@@ -135,9 +132,9 @@ function ensureMarketerRegistration(): void {
 
 function ensureTodomonRegistration(): void {
   ensureDefaultRegisteredGroup(TODOMON_CHANNEL_JID, {
-    name: 'Todomon',
+    name: '투두몬',
     folder: TODOMON_FOLDER,
-    trigger: '@todomon',
+    trigger: '@투두몬',
     aliases: ['todomon', '투두몬'],
     requiresTrigger: false,
     gateway: {
@@ -567,7 +564,7 @@ export function storeMessage(msg: NewMessage): void {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
-    msg.is_cross_agent ? 1 : 0,
+    0,
     msg.agent_source ?? null,
     msg.thread_ts ?? null,
   );
@@ -585,7 +582,6 @@ export function storeMessageDirect(msg: {
   timestamp: string;
   is_from_me: boolean;
   is_bot_message?: boolean;
-  is_cross_agent?: boolean;
   agent_source?: string;
   thread_ts?: string;
 }): void {
@@ -600,7 +596,7 @@ export function storeMessageDirect(msg: {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
-    msg.is_cross_agent ? 1 : 0,
+    0,
     msg.agent_source ?? null,
     msg.thread_ts ?? null,
   );
@@ -609,52 +605,93 @@ export function storeMessageDirect(msg: {
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
-  botPrefix: string,
 ): { messages: NewMessage[]; newTimestamp: string } {
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
   const placeholders = jids.map(() => '?').join(',');
-  // Filter bot messages using the is_bot_message flag plus content-prefix
-  // backstop, but always keep cross-agent rows.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders})
-      AND ((is_bot_message = 0 AND content NOT LIKE ?) OR is_cross_agent = 1)
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
 
-  const rows = db
-    .prepare(sql)
-    .all(lastTimestamp, ...jids, `${botPrefix}:%`) as NewMessage[];
-
-  let newTimestamp = lastTimestamp;
-  for (const row of rows) {
-    if (row.timestamp > newTimestamp) newTimestamp = row.timestamp;
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
   }
 
-  return { messages: rows, newTimestamp };
+  const rows = db
+    .prepare(sql)
+    .all(lastTimestamp, ...jids) as RawRow[];
+
+  let newTimestamp = lastTimestamp;
+  const messages: NewMessage[] = [];
+  for (const row of rows) {
+    if (row.timestamp > newTimestamp) newTimestamp = row.timestamp;
+    messages.push({
+      id: row.id,
+      chat_jid: row.chat_jid,
+      sender: row.sender,
+      sender_name: row.sender_name,
+      content: row.content,
+      timestamp: row.timestamp,
+      thread_ts: row.thread_ts ?? undefined,
+      is_bot_message: !!row.is_bot_message,
+      agent_source: row.agent_source ?? undefined,
+    });
+  }
+
+  return { messages, newTimestamp };
 }
 
 export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
-  botPrefix: string,
 ): NewMessage[] {
-  // Filter bot messages using the is_bot_message flag plus content-prefix
-  // backstop, but always keep cross-agent rows.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
-      AND ((is_bot_message = 0 AND content NOT LIKE ?) OR is_cross_agent = 1)
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
-  return db
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
+  }
+
+  const rows = db
     .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
+    .all(chatJid, sinceTimestamp) as RawRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    thread_ts: row.thread_ts ?? undefined,
+    is_bot_message: !!row.is_bot_message,
+    agent_source: row.agent_source ?? undefined,
+  }));
 }
 
 export function createTask(
@@ -1006,6 +1043,29 @@ export function getAgentsByChannel(jid: string): RegisteredGroup[] {
     groups.push(group);
   }
   return groups;
+}
+
+/**
+ * Get all unique agents (deduplicated by folder) across all channels.
+ */
+export function getAllUniqueAgents(): RegisteredGroup[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM registered_groups ORDER BY added_at, folder',
+    )
+    .all() as RegisteredGroupRow[];
+
+  const seen = new Set<string>();
+  const agents: RegisteredGroup[] = [];
+  for (const row of rows) {
+    if (seen.has(row.folder)) continue;
+    seen.add(row.folder);
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) continue;
+    const { jid: _jid, ...group } = mapped;
+    agents.push(group);
+  }
+  return agents;
 }
 
 export function getChannelsForAgent(folder: string): string[] {

@@ -24,6 +24,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getAllUniqueAgents,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -230,7 +231,7 @@ async function processGroupMessages(
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
   const sinceTimestamp = getAgentCursor(chatJid, group.folder);
-  const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+  const missedMessages = getMessagesSince(chatJid, sinceTimestamp);
 
   if (missedMessages.length === 0) return true;
 
@@ -244,6 +245,7 @@ async function processGroupMessages(
     await channel.sendMessage(
       chatJid,
       'Session cleared. I will continue in a fresh session from your next message.',
+      group.name,
     );
     return true;
   }
@@ -305,7 +307,7 @@ async function processGroupMessages(
         'Agent output processed',
       );
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        await channel.sendMessage(chatJid, text, group.name);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -452,7 +454,7 @@ async function startMessageLoop(): Promise<void> {
     try {
       const routes = getAgentRoutes();
       const jids = [...new Set(routes.map((route) => route.chatJid))];
-      const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
+      const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp);
 
       if (messages.length > 0) {
         logger.info({ count: messages.length }, 'New messages');
@@ -480,6 +482,8 @@ async function startMessageLoop(): Promise<void> {
           }
 
           const routesForChannel = routes.filter((route) => route.chatJid === chatJid);
+          const registeredFolders = new Set(routesForChannel.map((r) => r.group.folder));
+
           for (const route of routesForChannel) {
             const group = route.group;
             const agentFolder = group.folder;
@@ -495,6 +499,7 @@ async function startMessageLoop(): Promise<void> {
               await channel.sendMessage(
                 chatJid,
                 'Session cleared. I will continue in a fresh session from your next message.',
+                group.name,
               );
               continue;
             }
@@ -514,7 +519,6 @@ async function startMessageLoop(): Promise<void> {
             const allPending = getMessagesSince(
               chatJid,
               getAgentCursor(chatJid, agentFolder),
-              ASSISTANT_NAME,
             );
             const messagesToSend =
               allPending.length > 0 ? allPending : groupMessages;
@@ -544,6 +548,18 @@ async function startMessageLoop(): Promise<void> {
               queue.enqueueMessageCheck(chatJid, agentFolder);
             }
           }
+
+          // Ad-hoc alias mention: agents NOT registered in this channel but
+          // mentioned by alias in any of the new messages get enqueued too.
+          const allAgents = getAllUniqueAgents();
+          for (const agent of allAgents) {
+            if (registeredFolders.has(agent.folder)) continue;
+            const hasMention = groupMessages.some((m) =>
+              matchesAlias(m.content, agent.aliases),
+            );
+            if (!hasMention) continue;
+            queue.enqueueMessageCheck(chatJid, agent.folder);
+          }
         }
       }
     } catch (err) {
@@ -561,7 +577,7 @@ function recoverPendingMessages(): void {
   const routes = getAgentRoutes();
   for (const { chatJid, group } of routes) {
     const sinceTimestamp = getAgentCursor(chatJid, group.folder);
-    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+    const pending = getMessagesSince(chatJid, sinceTimestamp);
     if (pending.length > 0) {
       logger.info(
         { group: group.name, chatJid, pendingCount: pending.length },

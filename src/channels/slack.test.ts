@@ -456,7 +456,7 @@ describe('SlackChannel', () => {
   // --- Message filtering ---
 
   describe('message filtering', () => {
-    it('skips bot messages (bot_id set)', async () => {
+    it('passes bot messages through with is_bot_message=true', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await connectChannel(channel);
@@ -464,12 +464,58 @@ describe('SlackChannel', () => {
       await triggerMessage({
         channel: CHANNEL_ID,
         ts: '1700000001.000001',
-        text: 'I am a bot',
+        text: '*TestAgent:* hello from bot',
         bot_id: 'B123',
         user: 'U_BOT',
       });
 
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        REGISTERED_JID,
+        expect.objectContaining({
+          is_bot_message: true,
+          agent_source: 'TestAgent',
+          content: '*TestAgent:* hello from bot',
+        }),
+      );
+    });
+
+    it('parses agent_source from *AgentName:* prefix in bot messages', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      await triggerMessage({
+        channel: CHANNEL_ID,
+        ts: '1700000001.000001',
+        text: '*홍명보:* 마케팅 리포트입니다',
+        bot_id: 'B123',
+        user: 'U_BOT',
+      });
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        REGISTERED_JID,
+        expect.objectContaining({
+          is_bot_message: true,
+          agent_source: '홍명보',
+        }),
+      );
+    });
+
+    it('does not update activeThreadTs for bot messages', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000001.000001', text: 'User msg', user: 'U_ALICE' });
+      await triggerMessage({
+        channel: CHANNEL_ID,
+        ts: '1700000002.000001',
+        text: '*Bot:* reply',
+        bot_id: 'B123',
+        user: 'U_BOT',
+      });
+
+      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
     });
 
     it('skips messages with unsupported subtypes', async () => {

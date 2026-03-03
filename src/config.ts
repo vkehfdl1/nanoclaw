@@ -76,11 +76,6 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
-export const MAX_PING_PONG_TURNS = Math.max(
-  1,
-  parseInt(process.env.MAX_PING_PONG_TURNS || '5', 10) || 5,
-);
-
 // Timezone for scheduled tasks and container runtime local time.
 // Defaults to Asia/Seoul; can still be overridden via TZ.
 export const TIMEZONE = process.env.TZ || 'Asia/Seoul';

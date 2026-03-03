@@ -8,6 +8,7 @@ import {
   getAgentsByChannel,
   getAllChats,
   getAllRegisteredGroups,
+  getAllUniqueAgents,
   getChannelsForAgent,
   getMessagesSince,
   getNewMessages,
@@ -58,7 +59,7 @@ describe('storeMessage', () => {
       timestamp: '2024-01-01T00:00:01.000Z',
     });
 
-    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 'Andy');
+    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z');
     expect(messages).toHaveLength(1);
     expect(messages[0].id).toBe('msg-1');
     expect(messages[0].sender).toBe('123@slack.user');
@@ -78,7 +79,7 @@ describe('storeMessage', () => {
       timestamp: '2024-01-01T00:00:04.000Z',
     });
 
-    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 'Andy');
+    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z');
     expect(messages).toHaveLength(0);
   });
 
@@ -95,8 +96,7 @@ describe('storeMessage', () => {
       is_from_me: true,
     });
 
-    // Message is stored (we can retrieve it — is_from_me doesn't affect retrieval)
-    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 'Andy');
+    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z');
     expect(messages).toHaveLength(1);
   });
 
@@ -121,7 +121,7 @@ describe('storeMessage', () => {
       timestamp: '2024-01-01T00:00:01.000Z',
     });
 
-    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 'Andy');
+    const messages = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z');
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('updated');
   });
@@ -143,8 +143,8 @@ describe('getMessagesSince', () => {
     });
     storeMessage({
       id: 'm3', chat_jid: 'group@g.us', sender: 'Bot@slack.user',
-      sender_name: 'Bot', content: 'bot reply', timestamp: '2024-01-01T00:00:03.000Z',
-      is_bot_message: true,
+      sender_name: 'Bot', content: '*Dobby:* bot reply', timestamp: '2024-01-01T00:00:03.000Z',
+      is_bot_message: true, agent_source: 'Dobby',
     });
     store({
       id: 'm4', chat_jid: 'group@g.us', sender: 'Carol@slack.user',
@@ -153,52 +153,22 @@ describe('getMessagesSince', () => {
   });
 
   it('returns messages after the given timestamp', () => {
-    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:02.000Z', 'Andy');
-    // Should exclude m1, m2 (before/at timestamp), m3 (bot message)
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0].content).toBe('third');
+    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:02.000Z');
+    // Should include m3 (bot message now included) and m4
+    expect(msgs).toHaveLength(2);
   });
 
-  it('excludes bot messages via is_bot_message flag', () => {
-    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z', 'Andy');
-    const botMsgs = msgs.filter((m) => m.content === 'bot reply');
-    expect(botMsgs).toHaveLength(0);
+  it('includes bot messages (no longer filtered)', () => {
+    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:00.000Z');
+    const botMsgs = msgs.filter((m) => m.is_bot_message);
+    expect(botMsgs).toHaveLength(1);
+    expect(botMsgs[0].agent_source).toBe('Dobby');
   });
 
-  it('returns all non-bot messages when sinceTimestamp is empty', () => {
-    const msgs = getMessagesSince('group@g.us', '', 'Andy');
-    // 3 user messages (bot message excluded)
-    expect(msgs).toHaveLength(3);
-  });
-
-  it('filters pre-migration bot messages via content prefix backstop', () => {
-    // Simulate a message written before migration: has prefix but is_bot_message = 0
-    store({
-      id: 'm5', chat_jid: 'group@g.us', sender: 'Bot@slack.user',
-      sender_name: 'Bot', content: 'Andy: old bot reply',
-      timestamp: '2024-01-01T00:00:05.000Z',
-    });
-    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:04.000Z', 'Andy');
-    expect(msgs).toHaveLength(0);
-  });
-
-  it('includes cross-agent bot messages', () => {
-    storeMessage({
-      id: 'm6',
-      chat_jid: 'group@g.us',
-      sender: 'agent:marketer',
-      sender_name: '@marketer',
-      content: '[from @marketer] ping',
-      timestamp: '2024-01-01T00:00:05.000Z',
-      is_bot_message: true,
-      is_cross_agent: true,
-      agent_source: 'marketer',
-    });
-
-    const msgs = getMessagesSince('group@g.us', '2024-01-01T00:00:04.000Z', 'Andy');
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0].id).toBe('m6');
-    expect(msgs[0].content).toContain('[from @marketer]');
+  it('returns all messages when sinceTimestamp is empty', () => {
+    const msgs = getMessagesSince('group@g.us', '');
+    // All 4 messages including bot
+    expect(msgs).toHaveLength(4);
   });
 });
 
@@ -219,7 +189,7 @@ describe('getNewMessages', () => {
     });
     storeMessage({
       id: 'a3', chat_jid: 'group1@g.us', sender: 'user@slack.user',
-      sender_name: 'User', content: 'bot reply', timestamp: '2024-01-01T00:00:03.000Z',
+      sender_name: 'User', content: '*Bot:* bot reply', timestamp: '2024-01-01T00:00:03.000Z',
       is_bot_message: true,
     });
     store({
@@ -228,57 +198,39 @@ describe('getNewMessages', () => {
     });
   });
 
-  it('returns new messages across multiple groups', () => {
+  it('returns new messages across multiple groups (including bot messages)', () => {
     const { messages, newTimestamp } = getNewMessages(
       ['group1@g.us', 'group2@g.us'],
       '2024-01-01T00:00:00.000Z',
-      'Andy',
     );
-    // Excludes bot message, returns 3 user messages
-    expect(messages).toHaveLength(3);
+    // Includes bot message now (4 total)
+    expect(messages).toHaveLength(4);
     expect(newTimestamp).toBe('2024-01-01T00:00:04.000Z');
   });
 
   it('filters by timestamp', () => {
     const { messages } = getNewMessages(
       ['group1@g.us', 'group2@g.us'],
-      '2024-01-01T00:00:02.000Z',
-      'Andy',
+      '2024-01-01T00:00:03.000Z',
     );
-    // Only g1 msg2 (after ts, not bot)
+    // Only g1 msg2 (after ts)
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('g1 msg2');
   });
 
   it('returns empty for no registered groups', () => {
-    const { messages, newTimestamp } = getNewMessages([], '', 'Andy');
+    const { messages, newTimestamp } = getNewMessages([], '');
     expect(messages).toHaveLength(0);
     expect(newTimestamp).toBe('');
   });
 
-  it('returns cross-agent bot messages from getNewMessages', () => {
-    storeMessage({
-      id: 'a5',
-      chat_jid: 'group2@g.us',
-      sender: 'agent:marketer',
-      sender_name: '@marketer',
-      content: '[from @marketer] status update',
-      timestamp: '2024-01-01T00:00:05.000Z',
-      is_bot_message: true,
-      is_cross_agent: true,
-      agent_source: 'marketer',
-    });
-
-    const { messages, newTimestamp } = getNewMessages(
-      ['group1@g.us', 'group2@g.us'],
-      '2024-01-01T00:00:04.000Z',
-      'Andy',
+  it('returns bot messages with is_bot_message flag set', () => {
+    const { messages } = getNewMessages(
+      ['group1@g.us'],
+      '2024-01-01T00:00:02.000Z',
     );
-
-    expect(messages).toHaveLength(1);
-    expect(messages[0].id).toBe('a5');
-    expect(messages[0].content).toContain('[from @marketer]');
-    expect(newTimestamp).toBe('2024-01-01T00:00:05.000Z');
+    const botMsgs = messages.filter((m) => m.is_bot_message);
+    expect(botMsgs).toHaveLength(1);
   });
 });
 
@@ -450,7 +402,7 @@ describe('registered_groups multi-channel lookups', () => {
 });
 
 describe('default agent registrations', () => {
-  it('registers marketer and dobby in the same channel with expected trigger behavior', () => {
+  it('registers 홍명보 and 도비 in the same channel with expected trigger behavior', () => {
     _ensureDefaultAgentRegistrationsForTests();
 
     const channels = getChannelsForAgent('marketer');
@@ -459,15 +411,17 @@ describe('default agent registrations', () => {
     const marketerChannel = channels[0];
     const agentsInChannel = getAgentsByChannel(marketerChannel);
 
-    // Marketer: no trigger required (responds to all messages)
+    // 홍명보: no trigger required (responds to all messages)
     const marketer = agentsInChannel.find((g) => g.folder === 'marketer');
     expect(marketer).toBeDefined();
+    expect(marketer!.name).toBe('홍명보');
     expect(marketer!.requiresTrigger).toBe(false);
     expect(marketer!.role).toBe('marketer');
 
-    // Dobby: requires trigger (responds only when @mentioned)
+    // 도비: requires trigger (responds only when @mentioned)
     const dobby = agentsInChannel.find((g) => g.folder === 'main');
     expect(dobby).toBeDefined();
+    expect(dobby!.name).toBe('도비');
     expect(dobby!.requiresTrigger).toBe(true);
     expect(dobby!.role).toBe('main');
   });
@@ -480,7 +434,7 @@ describe('default agent registrations', () => {
 
     const marketer = agentsInChannel.find((g) => g.folder === 'marketer');
     expect(marketer).toBeDefined();
-    expect(marketer!.aliases).toEqual(['marketer', '마케터']);
+    expect(marketer!.aliases).toEqual(['marketer', '홍명보', '명보']);
     expect(marketer!.gateway).toEqual({
       rules: [
         { channel: [channels[0]], match: 'any_message' },
@@ -507,7 +461,6 @@ describe('aliases/gateway round-trip', () => {
         rules: [
           { channel: ['slack:C_TEST'], match: 'any_message' },
           { match: 'self_mention' },
-          { match: 'cross_agent', fromAgents: ['main'] },
         ],
       },
     });
@@ -516,15 +469,12 @@ describe('aliases/gateway round-trip', () => {
     const agent = all['slack:C_TEST'];
     expect(agent).toBeDefined();
     expect(agent.aliases).toEqual(['test', '테스트']);
-    expect(agent.gateway.rules).toHaveLength(3);
+    expect(agent.gateway.rules).toHaveLength(2);
     expect(agent.gateway.rules[0]).toEqual({ channel: ['slack:C_TEST'], match: 'any_message' });
     expect(agent.gateway.rules[1]).toEqual({ match: 'self_mention' });
-    expect(agent.gateway.rules[2]).toEqual({ match: 'cross_agent', fromAgents: ['main'] });
   });
 
   it('falls back to trigger-derived aliases when aliases column is null', () => {
-    // Directly store without aliases via raw SQL would result in null aliases
-    // Test the fallback by storing with empty aliases
     setRegisteredGroup('slack:C_FALLBACK', {
       name: 'Fallback Agent',
       folder: 'fallback',
@@ -539,6 +489,41 @@ describe('aliases/gateway round-trip', () => {
     expect(agent).toBeDefined();
     // Should derive from trigger since aliases was empty
     expect(agent.aliases).toEqual(['fallback-agent']);
+  });
+});
+
+// --- getAllUniqueAgents ---
+
+describe('getAllUniqueAgents', () => {
+  it('returns unique agents deduplicated by folder', () => {
+    setRegisteredGroup('slack:C111', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      aliases: ['young-gu', '영구'],
+      added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
+    });
+    setRegisteredGroup('slack:C222', {
+      name: 'PM Agent',
+      folder: 'pm-autorag',
+      trigger: '@young-gu',
+      aliases: ['young-gu', '영구'],
+      added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
+    });
+    setRegisteredGroup('slack:C333', {
+      name: 'Marketer',
+      folder: 'marketer',
+      trigger: '@marketer',
+      aliases: ['marketer'],
+      added_at: '2024-01-01T00:00:01.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
+    });
+
+    const agents = getAllUniqueAgents();
+    expect(agents).toHaveLength(2);
+    expect(agents.map((a) => a.folder).sort()).toEqual(['marketer', 'pm-autorag']);
   });
 });
 

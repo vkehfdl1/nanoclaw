@@ -9,6 +9,14 @@ import { logger } from '../logger.js';
 import { formatOutbound } from '../router.js';
 import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
 
+/**
+ * Parse the agent name from a bot message's `*AgentName:*` prefix.
+ */
+function parseAgentLabel(content: string): string | undefined {
+  const match = content.match(/^\*([^:*]+):\*/);
+  return match ? match[1] : undefined;
+}
+
 export interface SlackChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -87,10 +95,11 @@ export class SlackChannel implements Channel {
 
     // Listen for all messages in channels the bot is in
     this.app.message(async ({ message, client }) => {
-      // Skip bot messages and non-user subtypes (edits, deletes, etc.)
-      // Allow file_share subtype through for file uploads
-      if ('bot_id' in message && message.bot_id) return;
-      if (message.subtype && message.subtype !== 'file_share') return;
+      // Mark bot messages but let them through (for cross-agent alias mention routing)
+      const isOwnBot = 'bot_id' in message && !!message.bot_id;
+
+      // Skip non-user subtypes (edits, deletes, etc.) — allow file_share and bot_message
+      if (message.subtype && message.subtype !== 'file_share' && message.subtype !== 'bot_message') return;
 
       const hasText = 'text' in message && message.text;
       const hasFiles = 'files' in message && Array.isArray(message.files) && message.files.length > 0;
@@ -112,11 +121,13 @@ export class SlackChannel implements Channel {
 
       // Resolve sender display name
       const userId = ('user' in message ? message.user : undefined) || 'unknown';
-      const senderName = await this.resolveSenderName(client, userId);
+      const senderName = isOwnBot
+        ? (parseAgentLabel(('text' in message ? message.text : '') || '') ?? 'bot')
+        : await this.resolveSenderName(client, userId);
 
-      // Download any attached files into the group workspace
+      // Download any attached files into the group workspace (skip for own bot messages)
       const filePaths: string[] = [];
-      if (hasFiles) {
+      if (hasFiles && !isOwnBot) {
         const downloadsDir = path.join(GROUPS_DIR, group.folder, 'downloads');
         fs.mkdirSync(downloadsDir, { recursive: true });
 
@@ -157,7 +168,10 @@ export class SlackChannel implements Channel {
       }
       if (!content) return;
 
-      const fromMe = userId === this.botUserId;
+      const fromMe = userId === this.botUserId || isOwnBot;
+
+      // Parse agent source from bot message *AgentName:* prefix
+      const agentSource = isOwnBot ? parseAgentLabel(content) : undefined;
 
       // Determine which thread_ts to track for reply-in-thread:
       //   - If the message is already in a thread (thread_ts set), reply there
@@ -168,6 +182,7 @@ export class SlackChannel implements Channel {
           : message.ts;
 
       // Update the active thread for this channel so sendMessage() can reply in-thread
+      // Don't update for bot messages (own output)
       if (!fromMe) {
         this.activeThreadTs.set(chatJid, threadTs);
         logger.debug({ chatJid, threadTs }, 'Active thread updated from message');
@@ -181,7 +196,8 @@ export class SlackChannel implements Channel {
         content,
         timestamp,
         is_from_me: fromMe,
-        is_bot_message: fromMe,
+        is_bot_message: isOwnBot,
+        agent_source: agentSource,
         thread_ts: threadTs,
       });
     });
@@ -198,14 +214,27 @@ export class SlackChannel implements Channel {
    * Send a message to a Slack channel, automatically replying in-thread
    * when we have a tracked active thread for that channel.
    */
-  async sendMessage(jid: string, text: string, threadTs?: string): Promise<void> {
+  async sendMessage(jid: string, text: string, agentLabelOrThreadTs?: string, threadTs?: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
-    const assistantLabel = this.getAssistantLabel(jid);
+    // When called with 3 args from Channel interface: (jid, text, agentLabel)
+    // When called with 4 args internally: (jid, text, agentLabel, threadTs)
+    // Legacy 3-arg: (jid, text, threadTs) — detect by checking if 3rd arg looks like a Slack ts
+    let agentLabel: string | undefined;
+    let resolvedThreadTs: string | undefined;
+    if (agentLabelOrThreadTs && /^\d+\.\d+$/.test(agentLabelOrThreadTs)) {
+      // Legacy: 3rd arg is a threadTs
+      resolvedThreadTs = agentLabelOrThreadTs;
+    } else {
+      agentLabel = agentLabelOrThreadTs;
+      resolvedThreadTs = threadTs;
+    }
+
+    const assistantLabel = agentLabel || this.getAssistantLabel(jid);
     const outbound = formatOutbound(text);
     if (!outbound) return;
 
     // Use the explicitly provided threadTs, fall back to the auto-tracked active thread
-    const replyThreadTs = threadTs ?? this.activeThreadTs.get(jid);
+    const replyThreadTs = resolvedThreadTs ?? this.activeThreadTs.get(jid);
 
     try {
       await this.app.client.chat.postMessage({
@@ -226,8 +255,8 @@ export class SlackChannel implements Channel {
   /**
    * Explicitly post a reply into a specific Slack thread.
    */
-  async sendMessageInThread(jid: string, text: string, threadTs: string): Promise<void> {
-    return this.sendMessage(jid, text, threadTs);
+  async sendMessageInThread(jid: string, text: string, threadTs: string, agentLabel?: string): Promise<void> {
+    return this.sendMessage(jid, text, agentLabel, threadTs);
   }
 
   /**
@@ -245,9 +274,9 @@ export class SlackChannel implements Channel {
     return jid.startsWith('slack:');
   }
 
-  async sendFile(jid: string, filePath: string, comment?: string): Promise<void> {
+  async sendFile(jid: string, filePath: string, comment?: string, agentLabel?: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
-    const assistantLabel = this.getAssistantLabel(jid);
+    const assistantLabel = agentLabel || this.getAssistantLabel(jid);
     try {
       const fileContent = fs.readFileSync(filePath);
       const filename = path.basename(filePath);

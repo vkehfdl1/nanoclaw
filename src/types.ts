@@ -43,9 +43,8 @@ export interface ContainerConfig {
 
 export interface GatewayRule {
   channel?: string[];       // Only match in these channels (AND with other fields)
-  match?: 'self_mention' | 'cross_agent' | 'any_message';
+  match?: 'self_mention' | 'any_message';
   keywords?: string[];      // At least one keyword must be present (OR within, AND with other fields)
-  fromAgents?: string[];    // cross_agent match only: restrict to these source agents
 }
 
 export interface AgentGateway {
@@ -88,7 +87,6 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
-  is_cross_agent?: boolean;
   agent_source?: string;
   /** Slack thread timestamp — set for messages that belong to (or start) a thread */
   thread_ts?: string;

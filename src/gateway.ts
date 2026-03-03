@@ -14,7 +14,7 @@ export function matchesAlias(content: string, aliases: string[]): boolean {
 function parseAgentSource(message: NewMessage): string | undefined {
   if (message.agent_source) return message.agent_source;
   const match = message.content.match(/^\*([^:*]+):\*/);
-  return match ? match[1].toLowerCase() : undefined;
+  return match ? match[1] : undefined;
 }
 
 /**
@@ -38,15 +38,6 @@ export function evaluateRule(
       case 'self_mention':
         if (!matchesAlias(message.content, agent.aliases)) return false;
         break;
-      case 'cross_agent':
-        if (!message.is_cross_agent && !message.agent_source) return false;
-        if (rule.fromAgents && rule.fromAgents.length > 0) {
-          const source = parseAgentSource(message);
-          if (!source || !rule.fromAgents.some((a) => a.toLowerCase() === source)) {
-            return false;
-          }
-        }
-        break;
       case 'any_message':
         // No additional filtering — any message passes
         break;
@@ -68,8 +59,11 @@ export function evaluateRule(
  * Evaluate the full gateway for an agent against a message.
  * Rules are ORed: if any rule matches, the message is accepted.
  *
- * Bot messages are excluded by default (excludeBotMessages !== false)
- * unless the message is a cross-agent message.
+ * Bot messages handling:
+ * 1. Self-loop prevention: bot messages from the same agent are always rejected
+ * 2. By default (excludeBotMessages !== false), bot messages only pass if they
+ *    contain an alias mention of this agent
+ * 3. If excludeBotMessages is false, bot messages fall through to normal rule evaluation
  */
 export function evaluateGateway(
   message: NewMessage,
@@ -79,13 +73,16 @@ export function evaluateGateway(
   const gw = agent.gateway;
   if (!gw || !gw.rules || gw.rules.length === 0) return false;
 
-  // Exclude bot messages unless explicitly allowed or cross-agent
-  if (
-    gw.excludeBotMessages !== false &&
-    message.is_bot_message &&
-    !message.is_cross_agent
-  ) {
-    return false;
+  if (message.is_bot_message) {
+    // 1. Self-loop prevention: never process own output
+    const source = parseAgentSource(message);
+    if (source && source.toLowerCase() === agent.name.toLowerCase()) return false;
+
+    // 2. Default: bot messages only pass with alias mention
+    if (gw.excludeBotMessages !== false) {
+      return matchesAlias(message.content, agent.aliases);
+    }
+    // 3. excludeBotMessages: false → fall through to normal rule evaluation
   }
 
   // OR across rules
