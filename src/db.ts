@@ -190,6 +190,9 @@ function createSchema(database: Database.Database): void {
       group_folder TEXT NOT NULL,
       chat_jid TEXT NOT NULL,
       prompt TEXT NOT NULL,
+      code_snippet TEXT,
+      snippet_language TEXT DEFAULT 'python',
+      snippet_venv_path TEXT,
       schedule_type TEXT NOT NULL,
       schedule_value TEXT NOT NULL,
       next_run TEXT,
@@ -238,6 +241,27 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN code_snippet TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN snippet_language TEXT DEFAULT 'python'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN snippet_venv_path TEXT`,
     );
   } catch {
     /* column already exists */
@@ -638,14 +662,17 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, code_snippet, snippet_language, snippet_venv_path, schedule_type, schedule_value, context_mode, next_run, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
     task.group_folder,
     task.chat_jid,
     task.prompt,
+    task.code_snippet || null,
+    task.snippet_language || 'python',
+    task.snippet_venv_path || null,
     task.schedule_type,
     task.schedule_value,
     task.context_mode || 'isolated',
@@ -680,7 +707,14 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'prompt'
+      | 'code_snippet'
+      | 'snippet_language'
+      | 'snippet_venv_path'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'next_run'
+      | 'status'
     >
   >,
 ): void {
@@ -690,6 +724,18 @@ export function updateTask(
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
     values.push(updates.prompt);
+  }
+  if (updates.code_snippet !== undefined) {
+    fields.push('code_snippet = ?');
+    values.push(updates.code_snippet);
+  }
+  if (updates.snippet_language !== undefined) {
+    fields.push('snippet_language = ?');
+    values.push(updates.snippet_language);
+  }
+  if (updates.snippet_venv_path !== undefined) {
+    fields.push('snippet_venv_path = ?');
+    values.push(updates.snippet_venv_path);
   }
   if (updates.schedule_type !== undefined) {
     fields.push('schedule_type = ?');

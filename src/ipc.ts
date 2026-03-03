@@ -530,6 +530,9 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    code_snippet?: string;
+    snippet_language?: string;
+    snippet_venv_path?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -630,11 +633,23 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const codeSnippet = typeof data.code_snippet === 'string' && data.code_snippet.trim()
+          ? data.code_snippet
+          : null;
+        const snippetLanguage = codeSnippet && data.snippet_language === 'python'
+          ? 'python'
+          : null;
+        const snippetVenvPath = typeof data.snippet_venv_path === 'string' && data.snippet_venv_path.trim()
+          ? data.snippet_venv_path.trim()
+          : null;
         createTask({
           id: taskId,
           group_folder: targetFolder,
           chat_jid: targetJid,
           prompt: data.prompt,
+          code_snippet: codeSnippet,
+          snippet_language: snippetLanguage,
+          snippet_venv_path: snippetVenvPath,
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,

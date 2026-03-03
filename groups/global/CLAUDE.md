@@ -33,3 +33,12 @@ Define reusable sub-agents in `/workspace/group/.nanoclaw/subagents.json`.
 ## SecondBrain
 
 Use `mcp__nanoclaw__write_secondbrain_insight` with required fields: `type`, `source`, `title`, `project`, `tags`, `content`.
+
+## Scheduled Tasks
+
+- Use `schedule_task` with `code_snippet` when work should run only on real changes.
+- `code_snippet` is a Python function body. Return exactly `False` to skip the run silently.
+- Return any non-`False` value to pass structured payload into the scheduled prompt as `[SNIPPET_GATE_PAYLOAD]`.
+- Use `snippet_venv_path` when dependencies must run in a specific virtualenv (example: `/workspace/group/.venv`).
+- If the host asks for snippet auto-fix output, respond with JSON only:
+  `{"snippet_auto_fix_json":true,"code_snippet":"...","snippet_venv_path":"/workspace/group/.venv or null"}`.

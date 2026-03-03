@@ -57,3 +57,18 @@ systemctl --user restart nanoclaw
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+## Scheduled Tasks
+
+`scheduled_tasks` now support two execution modes:
+
+1. Prompt-only (legacy): run agent immediately with `prompt`.
+2. Snippet-gated: run `code_snippet` first; only invoke agent when the snippet allows it.
+
+Snippet-gated behavior:
+
+- `code_snippet` is treated as Python function body (`return False` to skip silently).
+- Any non-`False` return is injected into the agent prompt as `[SNIPPET_GATE_PAYLOAD]`.
+- Optional `snippet_venv_path` selects a Python venv inside container (for example `/workspace/group/.venv`).
+- If snippet execution errors, host writes an error log and immediately runs an auto-fix agent pass to patch the snippet.
+- Task editing is still handled by cancel + recreate.

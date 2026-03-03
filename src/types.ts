@@ -99,6 +99,9 @@ export interface ScheduledTask {
   group_folder: string;
   chat_jid: string;
   prompt: string;
+  code_snippet?: string | null;
+  snippet_language?: 'python' | null;
+  snippet_venv_path?: string | null;
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
@@ -123,14 +126,14 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, agentLabel?: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: file upload. Channels that support it implement it.
-  sendFile?(jid: string, filePath: string, comment?: string): Promise<void>;
+  sendFile?(jid: string, filePath: string, comment?: string, agentLabel?: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
