@@ -52,8 +52,8 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Enqueue two messages for the same group
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
 
     // Advance timers to let the first process complete
     await vi.advanceTimersByTimeAsync(200);
@@ -80,9 +80,9 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Enqueue 3 groups (limit is 2)
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
-    queue.enqueueMessageCheck('group2@g.us', 'group2');
-    queue.enqueueMessageCheck('group3@g.us', 'group3');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
+    queue.enqueueMessageCheck('group2@g.us', 'group2', '__channel__');
+    queue.enqueueMessageCheck('group3@g.us', 'group3', '__channel__');
 
     // Let promises settle
     await vi.advanceTimersByTimeAsync(10);
@@ -118,7 +118,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Start processing messages (takes the active slot)
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     // While active, enqueue both a task and pending messages
@@ -126,7 +126,7 @@ describe('GroupQueue', () => {
       executionOrder.push('task');
     });
     queue.enqueueTask('group1', 'task-1', taskFn);
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
 
     // Release the first processing
     resolveFirst!();
@@ -149,7 +149,7 @@ describe('GroupQueue', () => {
     });
 
     queue.setProcessMessagesFn(processMessages);
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
 
     // First call happens immediately
     await vi.advanceTimersByTimeAsync(10);
@@ -174,7 +174,7 @@ describe('GroupQueue', () => {
 
     await queue.shutdown(1000);
 
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
     await vi.advanceTimersByTimeAsync(100);
 
     expect(processMessages).not.toHaveBeenCalled();
@@ -191,7 +191,7 @@ describe('GroupQueue', () => {
     });
 
     queue.setProcessMessagesFn(processMessages);
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
 
     // Run through all 5 retries (MAX_RETRIES = 5)
     // Initial call
@@ -226,12 +226,12 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Fill both slots
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
-    queue.enqueueMessageCheck('group2@g.us', 'group2');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
+    queue.enqueueMessageCheck('group2@g.us', 'group2', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     // Queue a third
-    queue.enqueueMessageCheck('group3@g.us', 'group3');
+    queue.enqueueMessageCheck('group3@g.us', 'group3', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     expect(processed).toEqual(['group1@g.us', 'group2@g.us']);
@@ -259,7 +259,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Start processing (takes the active slot)
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     // Register a process so closeStdin has a groupFolder
@@ -294,7 +294,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Start processing
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     // Register process and mark idle
@@ -330,7 +330,7 @@ describe('GroupQueue', () => {
     });
 
     queue.setProcessMessagesFn(processMessages);
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
     queue.registerProcess('group1', {} as any, 'container-1', 'test-group', 'group1@g.us');
 
@@ -338,7 +338,7 @@ describe('GroupQueue', () => {
     queue.notifyIdle('group1');
 
     // A new user message arrives — resets idleWaiting
-    queue.sendMessage('group1', 'group1@g.us', 'hello');
+    queue.sendMessage('group1', 'group1@g.us', '__channel__', 'hello');
 
     // Task enqueued after message reset — should NOT preempt (agent is working)
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
@@ -371,7 +371,7 @@ describe('GroupQueue', () => {
     queue.registerProcess('group1', {} as any, 'container-1', 'test-group', 'group1@g.us');
 
     // sendMessage should return false — user messages must not go to task containers
-    const result = queue.sendMessage('group1', 'group1@g.us', 'hello');
+    const result = queue.sendMessage('group1', 'group1@g.us', '__channel__', 'hello');
     expect(result).toBe(false);
 
     resolveTask!();
@@ -392,7 +392,7 @@ describe('GroupQueue', () => {
     queue.setProcessMessagesFn(processMessages);
 
     // Start processing
-    queue.enqueueMessageCheck('group1@g.us', 'group1');
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     // Register process and enqueue a task (no idle yet — no preemption)
@@ -439,8 +439,8 @@ describe('GroupQueue', () => {
 
     queue.setProcessMessagesFn(processMessages);
 
-    queue.enqueueMessageCheck('slack:C111', 'pm-autorag');
-    queue.enqueueMessageCheck('slack:C222', 'pm-autorag');
+    queue.enqueueMessageCheck('slack:C111', 'pm-autorag', '__channel__');
+    queue.enqueueMessageCheck('slack:C222', 'pm-autorag', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     expect(maxConcurrent).toBe(1);
@@ -466,7 +466,7 @@ describe('GroupQueue', () => {
     });
 
     queue.setProcessMessagesFn(processMessages);
-    queue.enqueueMessageCheck('slack:C111', 'pm-autorag');
+    queue.enqueueMessageCheck('slack:C111', 'pm-autorag', '__channel__');
     await vi.advanceTimersByTimeAsync(10);
 
     queue.registerProcess(
@@ -477,7 +477,7 @@ describe('GroupQueue', () => {
       'slack:C111',
     );
 
-    const piped = queue.sendMessage('pm-autorag', 'slack:C222', 'hello');
+    const piped = queue.sendMessage('pm-autorag', 'slack:C222', '__channel__', 'hello');
     expect(piped).toBe(false);
 
     resolveProcess!();

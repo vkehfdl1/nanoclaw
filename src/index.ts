@@ -19,17 +19,22 @@ import {
 } from './container-runner.js';
 import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
 import {
+  cleanupOldSessions,
   getAgentsByChannel,
+  getAgentCursor,
   getAllChats,
   getAllRegisteredGroups,
-  getAllSessions,
   getAllTasks,
   getAllUniqueAgents,
+  getChannelLevelMessages,
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  getSession,
+  getThreadMessages,
   initDatabase,
   deleteSession,
+  setAgentCursor,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -50,9 +55,7 @@ import { logger } from './logger.js';
 export { escapeXml, formatMessages } from './router.js';
 
 let lastTimestamp = '';
-let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
-let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
 let slack: SlackChannel | undefined;
@@ -61,14 +64,6 @@ const queue = new GroupQueue();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
-  const agentTs = getRouterState('last_agent_timestamp');
-  try {
-    lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
-  } catch {
-    logger.warn('Corrupted last_agent_timestamp in DB, resetting');
-    lastAgentTimestamp = {};
-  }
-  sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
@@ -76,12 +71,8 @@ function loadState(): void {
   );
 }
 
-function saveState(): void {
+function saveLastTimestamp(): void {
   setRouterState('last_timestamp', lastTimestamp);
-  setRouterState(
-    'last_agent_timestamp',
-    JSON.stringify(lastAgentTimestamp),
-  );
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -148,23 +139,6 @@ function isClearCommand(content: string, group: RegisteredGroup): boolean {
   return false;
 }
 
-function getAgentCursorKey(chatJid: string, agentFolder: string): string {
-  return `${chatJid}::${agentFolder}`;
-}
-
-function getAgentCursor(chatJid: string, agentFolder: string): string {
-  const key = getAgentCursorKey(chatJid, agentFolder);
-  return lastAgentTimestamp[key] ?? lastAgentTimestamp[chatJid] ?? '';
-}
-
-function setAgentCursor(
-  chatJid: string,
-  agentFolder: string,
-  timestamp: string,
-): void {
-  lastAgentTimestamp[getAgentCursorKey(chatJid, agentFolder)] = timestamp;
-}
-
 function findRegisteredAgent(
   chatJid: string,
   agentFolder: string,
@@ -203,21 +177,54 @@ function getAgentRoutes(): Array<{ chatJid: string; group: RegisteredGroup }> {
   return routes;
 }
 
-function clearGroupSession(chatJid: string, groupFolder: string): void {
-  delete sessions[groupFolder];
-  deleteSession(groupFolder);
+/**
+ * Clear sessions for an agent. If threadTs is provided, only clear that thread.
+ * Channel-level /clear wipes all sessions for the agent in that channel.
+ */
+function clearGroupSession(chatJid: string, groupFolder: string, threadTs?: string): void {
+  if (threadTs) {
+    deleteSession(groupFolder, chatJid, threadTs);
+  } else {
+    // Channel-level clear: delete all sessions for this agent in this channel
+    deleteSession(groupFolder, chatJid);
+  }
   // If a container is active, ask it to close so it doesn't continue on stale context.
   queue.closeStdin(groupFolder);
-  logger.info({ chatJid, groupFolder }, 'Session cleared');
+  logger.info({ chatJid, groupFolder, threadTs }, 'Session cleared');
 }
 
 /**
- * Process all pending messages for a group.
+ * Helper to send a message, using thread reply if threadTs is provided.
+ */
+async function sendToChannel(
+  channel: Channel,
+  chatJid: string,
+  text: string,
+  agentLabel: string,
+  threadTs?: string,
+): Promise<void> {
+  if (threadTs && channel.sendMessageInThread) {
+    await channel.sendMessageInThread(chatJid, text, threadTs, agentLabel);
+  } else {
+    await channel.sendMessage(chatJid, text, agentLabel);
+  }
+}
+
+/**
+ * Determine if a message is channel-level (starts its own thread) vs a thread reply.
+ */
+function isChannelLevelMessage(msg: NewMessage): boolean {
+  return !msg.thread_ts || msg.thread_ts === msg.id;
+}
+
+/**
+ * Process messages for a specific conversation (thread or channel-level batch).
  * Called by the GroupQueue when it's this group's turn.
  */
 async function processGroupMessages(
   chatJid: string,
   agentFolder: string,
+  threadTs: string,
 ): Promise<boolean> {
   const group = findRegisteredAgent(chatJid, agentFolder);
   if (!group) return true;
@@ -230,51 +237,73 @@ async function processGroupMessages(
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-  const sinceTimestamp = getAgentCursor(chatJid, group.folder);
-  const missedMessages = getMessagesSince(chatJid, sinceTimestamp);
+  // Build context based on thread vs channel-level
+  let contextMessages: NewMessage[];
+  if (threadTs === '__channel__') {
+    // Channel-level messages — only non-thread messages since cursor
+    const sinceTimestamp = getAgentCursor(agentFolder, chatJid);
+    contextMessages = getChannelLevelMessages(chatJid, sinceTimestamp);
+  } else {
+    // Thread context — all messages in this thread
+    contextMessages = getThreadMessages(chatJid, threadTs);
+  }
 
-  if (missedMessages.length === 0) return true;
+  if (contextMessages.length === 0) return true;
 
-  const latestClear = [...missedMessages]
+  // Check for /clear command
+  const latestClear = [...contextMessages]
     .reverse()
     .find((m) => isClearCommand(m.content, group));
   if (latestClear) {
-    clearGroupSession(chatJid, group.folder);
-    setAgentCursor(chatJid, group.folder, latestClear.timestamp);
-    saveState();
-    await channel.sendMessage(
+    const clearThreadTs = threadTs === '__channel__' ? undefined : threadTs;
+    clearGroupSession(chatJid, group.folder, clearThreadTs);
+    if (threadTs === '__channel__') {
+      setAgentCursor(agentFolder, chatJid, latestClear.timestamp);
+    }
+    await sendToChannel(
+      channel,
       chatJid,
       'Session cleared. I will continue in a fresh session from your next message.',
       group.name,
+      clearThreadTs,
     );
     return true;
   }
 
-  // Use gateway evaluation to determine if this agent should process
-  if (!isMainGroup) {
-    const hasMatch = missedMessages.some((m) => evaluateGateway(m, group, chatJid));
+  // Gateway evaluation: all agents (including main) must pass gateway checks
+  // when processing a thread they didn't initiate. This prevents main from
+  // double-responding when another agent is mentioned in a thread.
+  // Exception: channel-level conversations in the assigned channel always pass
+  // for main (it owns the channel).
+  if (threadTs !== '__channel__' || !isMainGroup) {
+    const hasMatch = contextMessages.some((m) => evaluateGateway(m, group, chatJid));
     if (!hasMatch) return true;
   }
 
   const prompt = await prependChannelMembersToPrompt(
     chatJid,
-    formatMessages(missedMessages),
+    formatMessages(contextMessages),
     SLACK_BOT_TOKEN,
   );
-  const activeThreadTs = missedMessages[missedMessages.length - 1]?.thread_ts;
 
-  // Advance cursor so the piping path in startMessageLoop won't re-fetch
-  // these messages. Save the old cursor so we can roll back on error.
-  const previousCursor = getAgentCursor(chatJid, group.folder);
-  setAgentCursor(
-    chatJid,
-    group.folder,
-    missedMessages[missedMessages.length - 1].timestamp,
-  );
-  saveState();
+  // For channel-level conversations, the reply goes to a thread under the first message
+  // For thread conversations, the reply goes to the same thread
+  const replyThreadTs = threadTs === '__channel__'
+    ? contextMessages[0]?.id  // Start a new thread under first message
+    : threadTs;
+
+  // Advance cursor (only for channel-level; thread messages don't need a cursor)
+  const previousCursor = getAgentCursor(agentFolder, chatJid);
+  if (threadTs === '__channel__') {
+    setAgentCursor(
+      agentFolder,
+      chatJid,
+      contextMessages[contextMessages.length - 1].timestamp,
+    );
+  }
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    { group: group.name, threadTs, messageCount: contextMessages.length },
     'Processing messages',
   );
 
@@ -293,8 +322,7 @@ async function processGroupMessages(
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, activeThreadTs, async (result) => {
-    // Streaming output callback — called for each agent result
+  const output = await runAgent(group, prompt, chatJid, replyThreadTs, async (result) => {
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       const text = formatOutbound(raw);
@@ -307,10 +335,9 @@ async function processGroupMessages(
         'Agent output processed',
       );
       if (text) {
-        await channel.sendMessage(chatJid, text, group.name);
+        await sendToChannel(channel, chatJid, text, group.name, replyThreadTs);
         outputSentToUser = true;
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
     }
 
@@ -327,15 +354,13 @@ async function processGroupMessages(
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
-    // If we already sent output to the user, don't roll back the cursor —
-    // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
       logger.warn({ group: group.name }, 'Agent error after output was sent, skipping cursor rollback to prevent duplicates');
       return true;
     }
-    // Roll back cursor so retries can re-process these messages
-    setAgentCursor(chatJid, group.folder, previousCursor);
-    saveState();
+    if (threadTs === '__channel__') {
+      setAgentCursor(agentFolder, chatJid, previousCursor);
+    }
     logger.warn({ group: group.name }, 'Agent error, rolled back message cursor for retry');
     return false;
   }
@@ -351,11 +376,14 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
+  // Thread-aware session: look up by (agent, channel, thread)
+  const sessionThreadKey = threadTs ?? '__channel__';
+  const sessionId = getSession(group.folder, chatJid, sessionThreadKey);
 
   const shouldAcceptSessionUpdate = (): boolean => {
     // If a clear happened while this run was active, keep the session cleared.
-    if (sessionId && !sessions[group.folder]) {
+    const current = getSession(group.folder, chatJid, sessionThreadKey);
+    if (sessionId && !current) {
       return false;
     }
     return true;
@@ -393,8 +421,7 @@ async function runAgent(
           output.status !== 'error' &&
           shouldAcceptSessionUpdate()
         ) {
-          sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
+          setSession(group.folder, chatJid, sessionThreadKey, output.newSessionId);
         }
         await onOutput(output);
       }
@@ -413,7 +440,7 @@ async function runAgent(
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
-        queue.registerProcess(group.folder, proc, containerName, group.folder, chatJid),
+        queue.registerProcess(group.folder, proc, containerName, group.folder, chatJid, threadTs),
       wrappedOnOutput,
     );
 
@@ -422,8 +449,7 @@ async function runAgent(
       output.status !== 'error' &&
       shouldAcceptSessionUpdate()
     ) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+      setSession(group.folder, chatJid, sessionThreadKey, output.newSessionId);
     }
 
     if (output.status === 'error') {
@@ -439,6 +465,59 @@ async function runAgent(
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
   }
+}
+
+/**
+ * Group messages into conversations by thread.
+ * Channel-level messages (thread_ts === id) within the same chatJid are batched
+ * together under the first message's ts as the thread anchor.
+ * Thread replies are grouped by their thread_ts.
+ */
+function groupByConversation(
+  messages: NewMessage[],
+): Map<string, { chatJid: string; threadTs: string; messages: NewMessage[] }> {
+  const conversations = new Map<string, { chatJid: string; threadTs: string; messages: NewMessage[] }>();
+  // Collect channel-level messages per chatJid for batching
+  const channelBatches = new Map<string, NewMessage[]>();
+
+  for (const msg of messages) {
+    if (isChannelLevelMessage(msg)) {
+      const batch = channelBatches.get(msg.chat_jid) || [];
+      batch.push(msg);
+      channelBatches.set(msg.chat_jid, batch);
+    } else {
+      // Thread reply — group by thread_ts
+      const key = `${msg.chat_jid}::${msg.thread_ts}`;
+      const existing = conversations.get(key);
+      if (existing) {
+        existing.messages.push(msg);
+      } else {
+        conversations.set(key, {
+          chatJid: msg.chat_jid,
+          threadTs: msg.thread_ts!,
+          messages: [msg],
+        });
+      }
+    }
+  }
+
+  // Batch channel-level messages: all channel-level msgs in same chatJid become one conversation
+  // anchored at '__channel__' (context will be built from DB using cursor)
+  for (const [chatJid, batch] of channelBatches) {
+    const key = `${chatJid}::__channel__`;
+    const existing = conversations.get(key);
+    if (existing) {
+      existing.messages.push(...batch);
+    } else {
+      conversations.set(key, {
+        chatJid,
+        threadTs: '__channel__',
+        messages: batch,
+      });
+    }
+  }
+
+  return conversations;
 }
 
 async function startMessageLoop(): Promise<void> {
@@ -461,20 +540,14 @@ async function startMessageLoop(): Promise<void> {
 
         // Advance the "seen" cursor for all messages immediately
         lastTimestamp = newTimestamp;
-        saveState();
+        saveLastTimestamp();
 
-        // Group new rows by chat channel
-        const messagesByGroup = new Map<string, NewMessage[]>();
-        for (const msg of messages) {
-          const existing = messagesByGroup.get(msg.chat_jid);
-          if (existing) {
-            existing.push(msg);
-          } else {
-            messagesByGroup.set(msg.chat_jid, [msg]);
-          }
-        }
+        // Group messages by conversation (thread or channel-level batch)
+        const conversations = groupByConversation(messages);
 
-        for (const [chatJid, groupMessages] of messagesByGroup) {
+        for (const [, convo] of conversations) {
+          const { chatJid, threadTs, messages: convoMessages } = convo;
+
           const channel = findChannel(channels, chatJid);
           if (!channel) {
             console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
@@ -489,76 +562,104 @@ async function startMessageLoop(): Promise<void> {
             const agentFolder = group.folder;
             const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-            const latestClear = [...groupMessages]
+            // Quick clear check on the batch
+            const latestClear = [...convoMessages]
               .reverse()
               .find((m) => isClearCommand(m.content, group));
             if (latestClear) {
-              clearGroupSession(chatJid, group.folder);
-              setAgentCursor(chatJid, group.folder, latestClear.timestamp);
-              saveState();
-              await channel.sendMessage(
+              const clearThreadTs = threadTs === '__channel__' ? undefined : threadTs;
+              clearGroupSession(chatJid, group.folder, clearThreadTs);
+              if (threadTs === '__channel__') {
+                setAgentCursor(agentFolder, chatJid, latestClear.timestamp);
+              }
+              await sendToChannel(
+                channel,
                 chatJid,
                 'Session cleared. I will continue in a fresh session from your next message.',
                 group.name,
+                clearThreadTs,
               );
               continue;
             }
 
-            // Use gateway evaluation to determine if this agent should process.
-            // Non-matching messages accumulate in DB and get pulled as
-            // context when a matching message eventually arrives.
-            if (!isMainGroup) {
-              const hasMatch = groupMessages.some((m) =>
+            // Gateway evaluation: same logic as processGroupMessages —
+            // main skips only for channel-level in its own channel.
+            if (threadTs !== '__channel__' || !isMainGroup) {
+              const hasMatch = convoMessages.some((m) =>
                 evaluateGateway(m, group, chatJid),
               );
               if (!hasMatch) continue;
             }
 
-            // Pull all messages since this (chat, agent) cursor so non-trigger
-            // context that accumulated between triggers is included.
-            const allPending = getMessagesSince(
-              chatJid,
-              getAgentCursor(chatJid, agentFolder),
-            );
-            const messagesToSend =
-              allPending.length > 0 ? allPending : groupMessages;
-            const formatted = await prependChannelMembersToPrompt(
-              chatJid,
-              formatMessages(messagesToSend),
-              SLACK_BOT_TOKEN,
-            );
-
-            if (queue.sendMessage(agentFolder, chatJid, formatted)) {
-              logger.debug(
-                { chatJid, agentFolder, count: messagesToSend.length },
-                'Piped messages to active container',
-              );
-              setAgentCursor(
+            // Try to pipe to active container (same agent, same thread)
+            if (threadTs === '__channel__') {
+              // For channel-level: build context from all pending messages since cursor
+              const allPending = getChannelLevelMessages(
                 chatJid,
-                agentFolder,
-                messagesToSend[messagesToSend.length - 1].timestamp,
+                getAgentCursor(agentFolder, chatJid),
               );
-              saveState();
-              // Show typing indicator while the container processes the piped message
-              channel.setTyping?.(chatJid, true)?.catch((err) =>
-                logger.warn({ chatJid, agentFolder, err }, 'Failed to set typing indicator'),
+              const messagesToSend = allPending.length > 0 ? allPending : convoMessages;
+              const formatted = await prependChannelMembersToPrompt(
+                chatJid,
+                formatMessages(messagesToSend),
+                SLACK_BOT_TOKEN,
               );
+
+              if (queue.sendMessage(agentFolder, chatJid, threadTs, formatted)) {
+                logger.debug(
+                  { chatJid, agentFolder, threadTs, count: messagesToSend.length },
+                  'Piped messages to active container',
+                );
+                setAgentCursor(
+                  agentFolder,
+                  chatJid,
+                  messagesToSend[messagesToSend.length - 1].timestamp,
+                );
+                channel.setTyping?.(chatJid, true)?.catch((err) =>
+                  logger.warn({ chatJid, agentFolder, err }, 'Failed to set typing indicator'),
+                );
+              } else {
+                queue.enqueueMessageCheck(chatJid, agentFolder, threadTs);
+              }
             } else {
-              // No active container for this folder/channel pair — enqueue for a new one
-              queue.enqueueMessageCheck(chatJid, agentFolder);
+              // Thread messages: try pipe, or enqueue
+              const threadMessages = getThreadMessages(chatJid, threadTs);
+              const formatted = await prependChannelMembersToPrompt(
+                chatJid,
+                formatMessages(threadMessages),
+                SLACK_BOT_TOKEN,
+              );
+
+              if (queue.sendMessage(agentFolder, chatJid, threadTs, formatted)) {
+                logger.debug(
+                  { chatJid, agentFolder, threadTs, count: threadMessages.length },
+                  'Piped thread messages to active container',
+                );
+                channel.setTyping?.(chatJid, true)?.catch((err) =>
+                  logger.warn({ chatJid, agentFolder, err }, 'Failed to set typing indicator'),
+                );
+              } else {
+                queue.enqueueMessageCheck(chatJid, agentFolder, threadTs);
+              }
             }
           }
 
           // Ad-hoc alias mention: agents NOT registered in this channel but
           // mentioned by alias in any of the new messages get enqueued too.
+          // Foreign agents always get the thread context.
           const allAgents = getAllUniqueAgents();
           for (const agent of allAgents) {
             if (registeredFolders.has(agent.folder)) continue;
-            const hasMention = groupMessages.some((m) =>
+            const hasMention = convoMessages.some((m) =>
               matchesAlias(m.content, agent.aliases),
             );
             if (!hasMention) continue;
-            queue.enqueueMessageCheck(chatJid, agent.folder);
+            // Foreign mention: use the thread context
+            // For channel-level mentions, use the first message's id as thread anchor
+            const mentionThreadTs = threadTs === '__channel__'
+              ? convoMessages[0]?.id ?? threadTs
+              : threadTs;
+            queue.enqueueMessageCheck(chatJid, agent.folder, mentionThreadTs);
           }
         }
       }
@@ -576,14 +677,18 @@ async function startMessageLoop(): Promise<void> {
 function recoverPendingMessages(): void {
   const routes = getAgentRoutes();
   for (const { chatJid, group } of routes) {
-    const sinceTimestamp = getAgentCursor(chatJid, group.folder);
+    const sinceTimestamp = getAgentCursor(group.folder, chatJid);
     const pending = getMessagesSince(chatJid, sinceTimestamp);
     if (pending.length > 0) {
       logger.info(
         { group: group.name, chatJid, pendingCount: pending.length },
         'Recovery: found unprocessed messages',
       );
-      queue.enqueueMessageCheck(chatJid, group.folder);
+      // Group pending messages by conversation for proper thread routing
+      const conversations = groupByConversation(pending);
+      for (const [, convo] of conversations) {
+        queue.enqueueMessageCheck(convo.chatJid, group.folder, convo.threadTs);
+      }
     }
   }
 }
@@ -598,6 +703,12 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  // Clean up stale sessions (older than 7 days)
+  const cleaned = cleanupOldSessions(7);
+  if (cleaned > 0) {
+    logger.info({ cleaned }, 'Cleaned up stale sessions');
+  }
 
   // Bootstrap scheduled tasks from agent schedule.json configs (idempotent)
   bootstrapAllAgentSchedules(registeredGroups);
@@ -639,7 +750,6 @@ async function main(): Promise<void> {
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
     queue,
     onProcess: (groupKey, proc, containerName, groupFolder) =>
       queue.registerProcess(groupKey, proc, containerName, groupFolder),

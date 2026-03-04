@@ -125,6 +125,8 @@ export interface Channel {
   name: string;
   connect(): Promise<void>;
   sendMessage(jid: string, text: string, agentLabel?: string): Promise<void>;
+  /** Send a message as a reply in a specific thread. */
+  sendMessageInThread?(jid: string, text: string, threadTs: string, agentLabel?: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

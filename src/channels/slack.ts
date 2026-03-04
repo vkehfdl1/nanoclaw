@@ -33,14 +33,6 @@ export class SlackChannel implements Channel {
   private botUserId = '';
   private opts: SlackChannelOpts;
 
-  /**
-   * Tracks the Slack thread_ts to reply into for each chatJid.
-   * Updated whenever a message arrives from a registered group:
-   *   - If the event is already in a thread, use its thread_ts (reply in same thread)
-   *   - If it's a top-level message, use its ts (start a new reply thread)
-   */
-  private activeThreadTs = new Map<string, string>();
-
   constructor(opts: SlackChannelOpts) {
     this.opts = opts;
     this.app = new App({
@@ -181,13 +173,6 @@ export class SlackChannel implements Channel {
           ? message.thread_ts
           : message.ts;
 
-      // Update the active thread for this channel so sendMessage() can reply in-thread
-      // Don't update for bot messages (own output)
-      if (!fromMe) {
-        this.activeThreadTs.set(chatJid, threadTs);
-        logger.debug({ chatJid, threadTs }, 'Active thread updated from message');
-      }
-
       this.opts.onMessage(chatJid, {
         id: message.ts,
         chat_jid: chatJid,
@@ -211,40 +196,23 @@ export class SlackChannel implements Channel {
   }
 
   /**
-   * Send a message to a Slack channel, automatically replying in-thread
-   * when we have a tracked active thread for that channel.
+   * Send a message to a Slack channel (channel-level, no thread).
+   * For thread replies, use sendMessageInThread().
    */
-  async sendMessage(jid: string, text: string, agentLabelOrThreadTs?: string, threadTs?: string): Promise<void> {
+  async sendMessage(jid: string, text: string, agentLabel?: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
-    // When called with 3 args from Channel interface: (jid, text, agentLabel)
-    // When called with 4 args internally: (jid, text, agentLabel, threadTs)
-    // Legacy 3-arg: (jid, text, threadTs) — detect by checking if 3rd arg looks like a Slack ts
-    let agentLabel: string | undefined;
-    let resolvedThreadTs: string | undefined;
-    if (agentLabelOrThreadTs && /^\d+\.\d+$/.test(agentLabelOrThreadTs)) {
-      // Legacy: 3rd arg is a threadTs
-      resolvedThreadTs = agentLabelOrThreadTs;
-    } else {
-      agentLabel = agentLabelOrThreadTs;
-      resolvedThreadTs = threadTs;
-    }
-
     const assistantLabel = agentLabel || this.getAssistantLabel(jid);
     const outbound = formatOutbound(text);
     if (!outbound) return;
-
-    // Use the explicitly provided threadTs, fall back to the auto-tracked active thread
-    const replyThreadTs = resolvedThreadTs ?? this.activeThreadTs.get(jid);
 
     try {
       await this.app.client.chat.postMessage({
         channel: channelId,
         text: `*${assistantLabel}:* ${outbound}`,
         mrkdwn: true,
-        ...(replyThreadTs ? { thread_ts: replyThreadTs } : {}),
       });
       logger.info(
-        { jid, length: outbound.length, inThread: !!replyThreadTs },
+        { jid, length: outbound.length, inThread: false },
         'Slack message sent',
       );
     } catch (err) {
@@ -253,17 +221,28 @@ export class SlackChannel implements Channel {
   }
 
   /**
-   * Explicitly post a reply into a specific Slack thread.
+   * Send a message as a reply in a specific Slack thread.
    */
   async sendMessageInThread(jid: string, text: string, threadTs: string, agentLabel?: string): Promise<void> {
-    return this.sendMessage(jid, text, agentLabel, threadTs);
-  }
+    const channelId = jid.replace('slack:', '');
+    const assistantLabel = agentLabel || this.getAssistantLabel(jid);
+    const outbound = formatOutbound(text);
+    if (!outbound) return;
 
-  /**
-   * Return the currently-tracked thread_ts for a given chatJid, if any.
-   */
-  getActiveThreadTs(jid: string): string | undefined {
-    return this.activeThreadTs.get(jid);
+    try {
+      await this.app.client.chat.postMessage({
+        channel: channelId,
+        text: `*${assistantLabel}:* ${outbound}`,
+        mrkdwn: true,
+        thread_ts: threadTs,
+      });
+      logger.info(
+        { jid, length: outbound.length, inThread: true, threadTs },
+        'Slack message sent',
+      );
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Slack message');
+    }
   }
 
   isConnected(): boolean {

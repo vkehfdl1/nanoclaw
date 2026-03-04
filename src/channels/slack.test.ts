@@ -215,64 +215,6 @@ describe('SlackChannel', () => {
   // --- Thread tracking: message events ---
 
   describe('thread tracking via message events', () => {
-    it('sets activeThreadTs to message.ts for top-level messages', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({
-        channel: CHANNEL_ID,
-        ts: '1700000001.000001',
-        text: 'Hello!',
-        user: 'U_ALICE',
-      });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
-    });
-
-    it('sets activeThreadTs to message.thread_ts when already in a thread', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({
-        channel: CHANNEL_ID,
-        ts: '1700000002.000001',
-        thread_ts: '1700000001.000000',
-        text: 'Another message in thread',
-        user: 'U_ALICE',
-      });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000000');
-    });
-
-    it('updates activeThreadTs when a newer message arrives', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000001.000001', text: 'First', user: 'U_ALICE' });
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000005.000001', text: 'Second', user: 'U_BOB' });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000005.000001');
-    });
-
-    it('does not update activeThreadTs for bot messages (fromMe)', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000001.000001', text: 'User msg', user: 'U_ALICE' });
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000002.000001', text: 'Bot reply', user: 'BOT_USER_123' });
-
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
-    });
-
-    it('does not track thread for unregistered channels', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({ channel: 'C_UNREGISTERED', ts: '1700000001.000001', text: 'Not registered', user: 'U_ALICE' });
-
-      expect(channel.getActiveThreadTs('slack:C_UNREGISTERED')).toBeUndefined();
-    });
-
     it('includes thread_ts in the NewMessage for threaded messages', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
@@ -326,23 +268,6 @@ describe('SlackChannel', () => {
       expect(call.thread_ts).toBeUndefined();
     });
 
-    it('replies in thread when activeThreadTs is set via incoming message', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000010.000001', text: 'Hi', user: 'U_ALICE' });
-
-      await channel.sendMessage(REGISTERED_JID, 'Hello!');
-
-      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: CHANNEL_ID,
-          thread_ts: '1700000010.000001',
-          text: expect.stringContaining('Hello!'),
-        }),
-      );
-    });
-
     it('uses group name as assistant label', async () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
@@ -351,19 +276,6 @@ describe('SlackChannel', () => {
 
       const call = fakeClient.chat.postMessage.mock.calls[0][0];
       expect(call.text).toMatch(/^\*Test Channel:\*/);
-    });
-
-    it('explicit threadTs overrides auto-tracked thread', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000010.000001', text: 'hi', user: 'U_ALICE' });
-
-      await channel.sendMessage(REGISTERED_JID, 'Different thread reply', '1700000099.000001');
-
-      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ thread_ts: '1700000099.000001' }),
-      );
     });
 
     it('sendMessageInThread always uses the provided thread_ts', async () => {
@@ -402,20 +314,13 @@ describe('SlackChannel', () => {
       await expect(channel.sendMessage(REGISTERED_JID, 'Test')).resolves.toBeUndefined();
     });
 
-    it('logs inThread=true when posting inside a thread', async () => {
+    it('logs inThread=true when posting via sendMessageInThread', async () => {
       const { logger } = await import('../logger.js');
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      await triggerMessage({
-        channel: CHANNEL_ID,
-        ts: '1700000010.000001',
-        text: 'hi',
-        user: 'U_ALICE',
-      });
-
       vi.mocked(logger.info).mockClear();
-      await channel.sendMessage(REGISTERED_JID, 'Reply');
+      await channel.sendMessageInThread(REGISTERED_JID, 'Reply', '1700000010.000001');
 
       expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
         expect.objectContaining({ inThread: true }),
@@ -437,19 +342,22 @@ describe('SlackChannel', () => {
     });
   });
 
-  // --- getActiveThreadTs ---
+  // --- sendMessageInThread ---
 
-  describe('getActiveThreadTs', () => {
-    it('returns undefined when no messages have arrived', async () => {
+  describe('sendMessageInThread', () => {
+    it('posts to the specified thread', async () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBeUndefined();
-    });
 
-    it('returns undefined for a jid with no tracked thread', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-      expect(channel.getActiveThreadTs('slack:COTHER')).toBeUndefined();
+      await channel.sendMessageInThread(REGISTERED_JID, 'Thread reply', '1700000050.000001', 'TestAgent');
+
+      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: CHANNEL_ID,
+          thread_ts: '1700000050.000001',
+          text: expect.stringContaining('TestAgent'),
+        }),
+      );
     });
   });
 
@@ -501,21 +409,23 @@ describe('SlackChannel', () => {
       );
     });
 
-    it('does not update activeThreadTs for bot messages', async () => {
+    it('delivers bot messages with is_from_me=true for own bot', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await connectChannel(channel);
 
-      await triggerMessage({ channel: CHANNEL_ID, ts: '1700000001.000001', text: 'User msg', user: 'U_ALICE' });
       await triggerMessage({
         channel: CHANNEL_ID,
         ts: '1700000002.000001',
         text: '*Bot:* reply',
         bot_id: 'B123',
-        user: 'U_BOT',
+        user: 'BOT_USER_123',
       });
 
-      expect(channel.getActiveThreadTs(REGISTERED_JID)).toBe('1700000001.000001');
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        REGISTERED_JID,
+        expect.objectContaining({ is_from_me: true }),
+      );
     });
 
     it('skips messages with unsupported subtypes', async () => {

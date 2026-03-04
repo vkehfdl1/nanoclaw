@@ -55,7 +55,6 @@ describe('task scheduler', () => {
 
     startSchedulerLoop({
       registeredGroups: () => ({}),
-      getSessions: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
       sendMessage: async () => {},
@@ -96,7 +95,6 @@ describe('task scheduler', () => {
 
     await _runTaskForTests(getTaskById('task-snippet-skip')!, {
       registeredGroups: () => ({ 'slack:C111': MARKETER_GROUP }),
-      getSessions: () => ({}),
       queue: { closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
       sendMessage,
@@ -167,7 +165,6 @@ describe('task scheduler', () => {
 
     await _runTaskForTests(getTaskById('task-snippet-autofix')!, {
       registeredGroups: () => ({ 'slack:C111': MARKETER_GROUP }),
-      getSessions: () => ({}),
       queue: { closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
       sendMessage,

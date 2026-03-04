@@ -19,6 +19,7 @@ import {
   getAgentsByChannel,
   getAllTasks,
   getDueTasks,
+  getSession,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -31,7 +32,6 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (groupKey: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -379,11 +379,10 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
-  const sessions = deps.getSessions();
+  // For group context mode, use the group's scheduled task session
   const sessionId =
     currentTask.context_mode === 'group'
-      ? sessions[currentTask.group_folder]
+      ? getSession(currentTask.group_folder, currentTask.chat_jid, '__scheduled__')
       : undefined;
 
   // After the task produces a result, close the container promptly.

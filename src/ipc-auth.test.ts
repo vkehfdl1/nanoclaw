@@ -668,8 +668,8 @@ describe('register_group success', () => {
 
 describe('clear_session authorization', () => {
   beforeEach(() => {
-    setSession('other-group', 'session-other');
-    setSession('main', 'session-main');
+    setSession('other-group', 'other@g.us', '__channel__', 'session-other');
+    setSession('main', 'main@g.us', '__channel__', 'session-main');
   });
 
   it('main group can clear another group session', async () => {
@@ -683,7 +683,7 @@ describe('clear_session authorization', () => {
       deps,
     );
 
-    expect(getSession('other-group')).toBeUndefined();
+    expect(getSession('other-group', 'other@g.us', '__channel__')).toBeUndefined();
   });
 
   it('non-main group cannot clear another group session', async () => {
@@ -697,7 +697,7 @@ describe('clear_session authorization', () => {
       deps,
     );
 
-    expect(getSession('main')).toBe('session-main');
+    expect(getSession('main', 'main@g.us', '__channel__')).toBe('session-main');
   });
 });
 

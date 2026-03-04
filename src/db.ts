@@ -218,8 +218,19 @@ function createSchema(database: Database.Database): void {
       value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL
+      agent_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      thread_ts TEXT NOT NULL DEFAULT '__channel__',
+      session_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_active TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (agent_folder, chat_jid, thread_ts)
+    );
+    CREATE TABLE IF NOT EXISTS agent_cursors (
+      agent_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      last_processed_ts TEXT NOT NULL,
+      PRIMARY KEY (agent_folder, chat_jid)
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT NOT NULL,
@@ -424,6 +435,82 @@ function createSchema(database: Database.Database): void {
 
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_registered_groups_folder ON registered_groups(folder);
+  `);
+
+  // Migrate old single-key sessions table to thread-aware schema
+  try {
+    const sessionsSql = database
+      .prepare(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`,
+      )
+      .get() as { sql: string } | undefined;
+
+    const sql = sessionsSql?.sql ?? '';
+    const hasOldSchema = /\bgroup_folder\s+TEXT\s+PRIMARY\s+KEY\b/i.test(sql);
+
+    if (hasOldSchema) {
+      database.exec(`
+        BEGIN TRANSACTION;
+        CREATE TABLE sessions_v2 (
+          agent_folder TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          thread_ts TEXT NOT NULL DEFAULT '__channel__',
+          session_id TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_active TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (agent_folder, chat_jid, thread_ts)
+        );
+        DROP TABLE sessions;
+        ALTER TABLE sessions_v2 RENAME TO sessions;
+        COMMIT;
+      `);
+      logger.info('Migrated sessions table to thread-aware schema (old sessions discarded)');
+    }
+  } catch (err) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      /* no open transaction */
+    }
+    logger.error({ err }, 'Failed to migrate sessions table');
+  }
+
+  // Migrate agent cursors from router_state JSON to dedicated table
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS agent_cursors (
+        agent_folder TEXT NOT NULL,
+        chat_jid TEXT NOT NULL,
+        last_processed_ts TEXT NOT NULL,
+        PRIMARY KEY (agent_folder, chat_jid)
+      );
+    `);
+    const agentTsRow = database
+      .prepare(`SELECT value FROM router_state WHERE key = 'last_agent_timestamp'`)
+      .get() as { value: string } | undefined;
+    if (agentTsRow?.value) {
+      const agentTs = JSON.parse(agentTsRow.value) as Record<string, string>;
+      const insertCursor = database.prepare(
+        `INSERT OR REPLACE INTO agent_cursors (agent_folder, chat_jid, last_processed_ts) VALUES (?, ?, ?)`,
+      );
+      for (const [compositeKey, ts] of Object.entries(agentTs)) {
+        const parts = compositeKey.split('::');
+        if (parts.length === 2) {
+          insertCursor.run(parts[1], parts[0], ts); // folder, chatJid, timestamp
+        } else {
+          // Legacy format: key is just chatJid, folder unknown — skip
+        }
+      }
+      database.prepare(`DELETE FROM router_state WHERE key = 'last_agent_timestamp'`).run();
+      logger.info('Migrated agent cursors from router_state to agent_cursors table');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to migrate agent cursors');
+  }
+
+  // Thread-optimized message indexes
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(chat_jid, thread_ts, timestamp);
   `);
 }
 
@@ -864,34 +951,189 @@ export function setRouterState(key: string, value: string): void {
   ).run(key, value);
 }
 
-// --- Session accessors ---
+// --- Session accessors (thread-aware) ---
 
-export function getSession(groupFolder: string): string | undefined {
+export function getSession(
+  agentFolder: string,
+  chatJid: string,
+  threadTs: string,
+): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
+    .prepare(
+      'SELECT session_id FROM sessions WHERE agent_folder = ? AND chat_jid = ? AND thread_ts = ?',
+    )
+    .get(agentFolder, chatJid, threadTs) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(
+  agentFolder: string,
+  chatJid: string,
+  threadTs: string,
+  sessionId: string,
+): void {
+  const now = new Date().toISOString();
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    `INSERT INTO sessions (agent_folder, chat_jid, thread_ts, session_id, created_at, last_active)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(agent_folder, chat_jid, thread_ts) DO UPDATE SET
+       session_id = excluded.session_id,
+       last_active = excluded.last_active`,
+  ).run(agentFolder, chatJid, threadTs, sessionId, now, now);
 }
 
-export function deleteSession(groupFolder: string): void {
-  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+export function deleteSession(
+  agentFolder: string,
+  chatJid?: string,
+  threadTs?: string,
+): void {
+  if (chatJid && threadTs) {
+    // Delete specific thread session
+    db.prepare(
+      'DELETE FROM sessions WHERE agent_folder = ? AND chat_jid = ? AND thread_ts = ?',
+    ).run(agentFolder, chatJid, threadTs);
+  } else if (chatJid) {
+    // Delete all sessions for agent in a channel
+    db.prepare(
+      'DELETE FROM sessions WHERE agent_folder = ? AND chat_jid = ?',
+    ).run(agentFolder, chatJid);
+  } else {
+    // Delete all sessions for agent
+    db.prepare('DELETE FROM sessions WHERE agent_folder = ?').run(agentFolder);
+  }
 }
 
-export function getAllSessions(): Record<string, string> {
+/**
+ * Delete sessions older than the given number of days.
+ * Returns the number of sessions deleted.
+ */
+export function cleanupOldSessions(maxAgeDays: number = 7): number {
+  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare(
+    'DELETE FROM sessions WHERE last_active < ?',
+  ).run(cutoff);
+  return result.changes;
+}
+
+// --- Agent cursor accessors ---
+
+export function getAgentCursor(
+  agentFolder: string,
+  chatJid: string,
+): string {
+  const row = db
+    .prepare(
+      'SELECT last_processed_ts FROM agent_cursors WHERE agent_folder = ? AND chat_jid = ?',
+    )
+    .get(agentFolder, chatJid) as { last_processed_ts: string } | undefined;
+  return row?.last_processed_ts ?? '';
+}
+
+export function setAgentCursor(
+  agentFolder: string,
+  chatJid: string,
+  timestamp: string,
+): void {
+  db.prepare(
+    `INSERT INTO agent_cursors (agent_folder, chat_jid, last_processed_ts)
+     VALUES (?, ?, ?)
+     ON CONFLICT(agent_folder, chat_jid) DO UPDATE SET last_processed_ts = excluded.last_processed_ts`,
+  ).run(agentFolder, chatJid, timestamp);
+}
+
+export function getAllAgentCursors(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
+    .prepare('SELECT agent_folder, chat_jid, last_processed_ts FROM agent_cursors')
+    .all() as Array<{ agent_folder: string; chat_jid: string; last_processed_ts: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    result[`${row.chat_jid}::${row.agent_folder}`] = row.last_processed_ts;
   }
   return result;
+}
+
+// --- Thread-aware message queries ---
+
+/**
+ * Get all messages in a specific thread.
+ */
+export function getThreadMessages(
+  chatJid: string,
+  threadTs: string,
+): NewMessage[] {
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
+    FROM messages
+    WHERE chat_jid = ? AND thread_ts = ?
+      AND content != '' AND content IS NOT NULL
+    ORDER BY timestamp
+  `;
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
+  }
+  const rows = db.prepare(sql).all(chatJid, threadTs) as RawRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    thread_ts: row.thread_ts ?? undefined,
+    is_bot_message: !!row.is_bot_message,
+    agent_source: row.agent_source ?? undefined,
+  }));
+}
+
+/**
+ * Get channel-level messages (messages that start their own thread, i.e. thread_ts === id).
+ * Used for assigned agent's channel-level context.
+ */
+export function getChannelLevelMessages(
+  chatJid: string,
+  sinceTimestamp: string,
+): NewMessage[] {
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
+    FROM messages
+    WHERE chat_jid = ? AND timestamp > ?
+      AND (thread_ts IS NULL OR thread_ts = id)
+      AND content != '' AND content IS NOT NULL
+    ORDER BY timestamp
+  `;
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
+  }
+  const rows = db.prepare(sql).all(chatJid, sinceTimestamp) as RawRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    thread_ts: row.thread_ts ?? undefined,
+    is_bot_message: !!row.is_bot_message,
+    agent_source: row.agent_source ?? undefined,
+  }));
 }
 
 // --- Registered group accessors ---
@@ -1101,6 +1343,7 @@ function migrateJsonState(): void {
     if (routerState.last_timestamp) {
       setRouterState('last_timestamp', routerState.last_timestamp);
     }
+    // Agent cursors are now migrated to agent_cursors table in createSchema
     if (routerState.last_agent_timestamp) {
       setRouterState(
         'last_agent_timestamp',
@@ -1109,15 +1352,15 @@ function migrateJsonState(): void {
     }
   }
 
-  // Migrate sessions.json
+  // Migrate sessions.json (old format: { folder: sessionId })
+  // New sessions are thread-aware; old ones are discarded since we can't
+  // determine which channel/thread they belonged to.
   const sessions = migrateFile('sessions.json') as Record<
     string,
     string
   > | null;
   if (sessions) {
-    for (const [folder, sessionId] of Object.entries(sessions)) {
-      setSession(folder, sessionId);
-    }
+    logger.info('Old sessions.json found and archived (sessions will be recreated)');
   }
 
   // Migrate registered_groups.json
