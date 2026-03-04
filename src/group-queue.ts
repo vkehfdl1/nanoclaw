@@ -79,6 +79,15 @@ export class GroupQueue {
     }
 
     if (state.active) {
+      // If the container is idle and the new conversation is for a different
+      // channel/thread, preempt so the queued conversation starts sooner.
+      if (state.idleWaiting) {
+        const sameConversation =
+          state.activeChatJid === chatJid && state.activeThreadTs === threadTs;
+        if (!sameConversation) {
+          this.closeStdin(groupKey);
+        }
+      }
       logger.debug({ groupKey, chatJid, threadTs }, 'Container active, conversation queued');
       return;
     }

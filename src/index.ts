@@ -591,38 +591,12 @@ async function startMessageLoop(): Promise<void> {
               if (!hasMatch) continue;
             }
 
-            // Try to pipe to active container (same agent, same thread)
             if (threadTs === '__channel__') {
-              // For channel-level: build context from all pending messages since cursor
-              const allPending = getChannelLevelMessages(
-                chatJid,
-                getAgentCursor(agentFolder, chatJid),
-              );
-              const messagesToSend = allPending.length > 0 ? allPending : convoMessages;
-              const formatted = await prependChannelMembersToPrompt(
-                chatJid,
-                formatMessages(messagesToSend),
-                SLACK_BOT_TOKEN,
-              );
-
-              if (queue.sendMessage(agentFolder, chatJid, threadTs, formatted)) {
-                logger.debug(
-                  { chatJid, agentFolder, threadTs, count: messagesToSend.length },
-                  'Piped messages to active container',
-                );
-                setAgentCursor(
-                  agentFolder,
-                  chatJid,
-                  messagesToSend[messagesToSend.length - 1].timestamp,
-                );
-                channel.setTyping?.(chatJid, true)?.catch((err) =>
-                  logger.warn({ chatJid, agentFolder, err }, 'Failed to set typing indicator'),
-                );
-              } else {
-                queue.enqueueMessageCheck(chatJid, agentFolder, threadTs);
-              }
+              // Channel-level: each batch creates a new thread, so piping to
+              // an existing container is not possible. Always enqueue.
+              queue.enqueueMessageCheck(chatJid, agentFolder, threadTs);
             } else {
-              // Thread messages: try pipe, or enqueue
+              // Thread messages: try to pipe to active container for this thread
               const threadMessages = getThreadMessages(chatJid, threadTs);
               const formatted = await prependChannelMembersToPrompt(
                 chatJid,
