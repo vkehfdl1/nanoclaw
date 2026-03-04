@@ -12,6 +12,7 @@ const envConfig = readEnvFile([
   'SLACK_BOT_TOKEN',
   'SLACK_APP_TOKEN',
   'NANOCLAW_REPOS_DIR',
+  'NANOCLAW_SECONDBRAIN_DIR',
 ]);
 
 export const ASSISTANT_NAME =
@@ -52,7 +53,9 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const HOST_REPOS_DIR = path.resolve(expandHomePath(REPOS_BASE_DIR));
 export const SECONDBRAIN_DIR = path.resolve(
   expandHomePath(
-    process.env.NANOCLAW_SECONDBRAIN_DIR || '~/.nanoclaw/secondbrain',
+    process.env.NANOCLAW_SECONDBRAIN_DIR ||
+      envConfig.NANOCLAW_SECONDBRAIN_DIR ||
+      '~/Projects/SecondBrain',
   ),
 );
 export const MAIN_GROUP_FOLDER = 'main';
