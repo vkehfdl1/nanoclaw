@@ -215,12 +215,11 @@ MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It ca
 \u2022 Never send a message (background maintenance tasks)
 
 CODE SNIPPET GATE (OPTIONAL):
-\u2022 code_snippet runs before agent invocation as Python function body.
-\u2022 If the snippet returns exactly False, the task exits silently (agent is not called).
-\u2022 Any other return value is passed to the agent prompt as a payload block.
+\u2022 code_snippet runs before agent invocation. snippet_language: "javascript" (default) or "bash".
+\u2022 JavaScript: async function body in Node.js — return false to skip silently. Receives a context object with task metadata.
+\u2022 Bash: shell script — print "false" to skip silently. Receives $NANOCLAW_CONTEXT_FILE path with task metadata JSON.
+\u2022 Any non-false return/output is passed to the agent prompt as [SNIPPET_GATE_PAYLOAD].
 \u2022 If snippet execution errors, host logs it and immediately invokes an auto-fix run for this task.
-\u2022 Snippet receives a context dict with task metadata (task_id, group_folder, chat_jid, schedule_type, schedule_value, run_started_at).
-\u2022 Use snippet_venv_path to select a Python virtualenv inside the container (example: "/workspace/group/.venv").
 
 SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 \u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
@@ -231,9 +230,8 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
-    code_snippet: z.string().optional().describe('Optional Python function body gate. Return False to skip run silently; return any other value to pass payload to the agent prompt.'),
-    snippet_language: z.enum(['python']).default('python').optional().describe('Snippet runtime language (currently only python).'),
-    snippet_venv_path: z.string().optional().describe('Optional Python virtualenv path inside the container (for example "/workspace/group/.venv").'),
+    code_snippet: z.string().optional().describe('Optional gate snippet. JavaScript: async function body, return false to skip. Bash: shell script, print "false" to skip. Any other return/output becomes the agent payload.'),
+    snippet_language: z.enum(['javascript', 'bash']).default('javascript').optional().describe('Snippet runtime language: "javascript" (default) or "bash".'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
   async (args) => {
@@ -281,8 +279,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       schedule_value: args.schedule_value,
       context_mode: args.context_mode || 'group',
       code_snippet: args.code_snippet,
-      snippet_language: args.snippet_language || 'python',
-      snippet_venv_path: args.snippet_venv_path,
+      snippet_language: args.snippet_language || 'javascript',
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),

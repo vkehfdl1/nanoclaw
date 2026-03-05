@@ -42,12 +42,12 @@ Approval keywords (case-insensitive): approve/ok/go/yes/lgtm → approve; reject
 | `/workspace/project` | Project root | read-only |
 | `/workspace/group` | `groups/main/` | read-write |
 
-You can read `registered_groups.json`, schedule tasks for any group, update global memory, and query the SQLite DB.
+You can schedule tasks for any group, update global memory, and use `register_group` / `list_tasks` MCP tools to manage groups and tasks.
 
 ## Group Management
 
 - Available groups: `/workspace/ipc/available_groups.json` (request refresh via `{"type":"refresh_groups"}` task if needed).
-- Registered groups: `/workspace/project/data/registered_groups.json` — add/remove entries directly.
+- Use the `register_group` MCP tool to add new groups (do NOT edit files directly — groups are stored in SQLite).
 - Folder convention: lowercase, hyphens (e.g., "Family Chat" → `family-chat`).
 - Extra mounts via `containerConfig.additionalMounts` in group entry.
 - Main group processes all messages; others require `@trigger` unless `requiresTrigger: false`.

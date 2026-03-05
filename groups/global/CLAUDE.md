@@ -22,9 +22,9 @@ Use `conversations/` for session recall. Split files > 500 lines. Keep a lightwe
 
 ## Browser Automation
 
-Use Actionbook (`actionbook`) for efficient browser operations — pre-computed action manuals reduce token usage and improve reliability. Pre-installed in all containers. Reference: https://github.com/actionbook/actionbook
+Use Actionbook (`actionbook`) for efficient browser operations — pre-computed action manuals reduce token usage and improve reliability. Both `agent-browser` and `actionbook` are pre-installed in all containers. Reference: https://github.com/actionbook/actionbook
 
-For login-required sites, load user-provisioned sessions with `agent-browser state load <file>`. If no session file exists or it has expired, ask the user (via Dobby) to re-authenticate — NEVER attempt to log in with credentials yourself.
+For login-required sites, load user-provisioned sessions with `agent-browser state load <file>`. If no session file exists or it has expired, ask the user to re-authenticate — NEVER attempt to log in with credentials yourself.
 
 ## Sub-agents
 
@@ -37,8 +37,10 @@ Use `mcp__nanoclaw__write_secondbrain_insight` with required fields: `type`, `so
 ## Scheduled Tasks
 
 - Use `schedule_task` with `code_snippet` when work should run only on real changes.
-- `code_snippet` is a Python function body. Return exactly `False` to skip the run silently.
-- Return any non-`False` value to pass structured payload into the scheduled prompt as `[SNIPPET_GATE_PAYLOAD]`.
-- Use `snippet_venv_path` when dependencies must run in a specific virtualenv (example: `/workspace/group/.venv`).
+- `snippet_language` is `'javascript'` (default) or `'bash'`.
+- JavaScript snippets run as async function body in Node.js — `return false` to skip silently.
+- Bash snippets run as shell scripts — print `false` to skip silently.
+- Any non-`false` return/output is injected into the agent prompt as `[SNIPPET_GATE_PAYLOAD]`.
+- JavaScript snippets receive a `context` object; Bash snippets receive `$NANOCLAW_CONTEXT_FILE` with task metadata.
 - If the host asks for snippet auto-fix output, respond with JSON only:
-  `{"snippet_auto_fix_json":true,"code_snippet":"...","snippet_venv_path":"/workspace/group/.venv or null"}`.
+  `{"snippet_auto_fix_json":true,"code_snippet":"...","snippet_language":"javascript or bash"}`.

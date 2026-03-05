@@ -10,6 +10,8 @@ This is a lightweight, secure alternative to OpenClaw (formerly ClawBot). That p
 
 NanoClaw gives you the core functionality without that mess.
 
+> **Note:** This fork uses Slack as the primary (and only) channel. WhatsApp references below are from the original upstream design and no longer apply.
+
 ---
 
 ## Philosophy
@@ -63,12 +65,12 @@ The project uses Docker by default (cross-platform). For macOS users who prefer 
 
 ## Vision
 
-A personal Claude assistant accessible via WhatsApp, with minimal custom code.
+A personal Claude assistant accessible via Slack, with minimal custom code.
 
 **Core components:**
 - **Claude Agent SDK** as the core agent
 - **Containers** for isolated agent execution (Linux VMs)
-- **WhatsApp** as the primary I/O channel
+- **Slack** as the primary I/O channel (Socket Mode)
 - **Persistent memory** per conversation and globally
 - **Scheduled tasks** that run Claude and can message back
 - **Web access** for search and browsing
@@ -84,7 +86,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 ## Architecture Decisions
 
 ### Message Routing
-- A router listens to WhatsApp and routes messages based on configuration
+- A router listens to Slack (via Socket Mode) and routes messages based on configuration
 - Only messages from registered groups are processed
 - Trigger: `@Andy` prefix (case insensitive), configurable via `ASSISTANT_NAME` env var
 - Unregistered groups are ignored completely
@@ -133,10 +135,10 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 
 ## Integration Points
 
-### WhatsApp
-- Using baileys library for WhatsApp Web connection
+### Slack
+- Using Slack Socket Mode for real-time message delivery
 - Messages stored in SQLite, polled by router
-- QR code authentication during setup
+- Bot token + App token authentication during setup
 
 ### Scheduler
 - Built-in scheduler runs on the host, spawns containers for task execution
