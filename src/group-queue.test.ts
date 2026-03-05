@@ -455,6 +455,80 @@ describe('GroupQueue', () => {
     ]);
   });
 
+  it('does NOT preempt idle assigned-channel container when new message is for same chatJid', async () => {
+    const fs = await import('fs');
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+
+    // Start processing a channel-level message
+    queue.enqueueMessageCheck('group1@g.us', 'group1', '__channel__', true);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Register process and mark idle
+    queue.registerProcess('group1', {} as any, 'container-1', 'test-group', 'group1@g.us', '__channel__');
+    queue.notifyIdle('group1');
+
+    // Clear writes so we can detect new ones
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    // Enqueue a thread message for the same chatJid with isAssigned=true
+    queue.enqueueMessageCheck('group1@g.us', 'group1', 'thread-123', true);
+
+    // Should NOT preempt because same chatJid in assigned channel = same unified session
+    const closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
+    expect(closeWrites).toHaveLength(0);
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('DOES preempt idle non-assigned container when new message is for different thread', async () => {
+    const fs = await import('fs');
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+
+    // Start processing a thread message (not assigned)
+    queue.enqueueMessageCheck('group1@g.us', 'group1', 'thread-1');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Register process and mark idle
+    queue.registerProcess('group1', {} as any, 'container-1', 'test-group', 'group1@g.us', 'thread-1');
+    queue.notifyIdle('group1');
+
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    // Enqueue a different thread (not assigned) — should preempt
+    queue.enqueueMessageCheck('group1@g.us', 'group1', 'thread-2');
+
+    const closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
+    expect(closeWrites).toHaveLength(1);
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
   it('does not pipe cross-channel messages into an active container for the same folder', async () => {
     let resolveProcess: () => void;
 

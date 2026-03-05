@@ -26,7 +26,6 @@ import {
   getAllRegisteredGroups,
   getAllTasks,
   getAllUniqueAgents,
-  getChannelLevelMessages,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -153,6 +152,10 @@ function findRegisteredAgent(
   return Object.values(registeredGroups).find((g) => g.folder === agentFolder);
 }
 
+function isAssignedChannel(agentFolder: string, chatJid: string): boolean {
+  return getAgentsByChannel(chatJid).some((g) => g.folder === agentFolder);
+}
+
 function getAgentRoutes(): Array<{ chatJid: string; group: RegisteredGroup }> {
   const routes: Array<{ chatJid: string; group: RegisteredGroup }> = [];
   const seen = new Set<string>();
@@ -235,16 +238,16 @@ async function processGroupMessages(
     return true;
   }
 
-  const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+  const assigned = isAssignedChannel(agentFolder, chatJid);
 
-  // Build context based on thread vs channel-level
+  // Build context based on assigned vs cross-channel
   let contextMessages: NewMessage[];
-  if (threadTs === '__channel__') {
-    // Channel-level messages — only non-thread messages since cursor
+  if (assigned) {
+    // Assigned channel: unified context — all messages (channel + threads) since cursor
     const sinceTimestamp = getAgentCursor(agentFolder, chatJid);
-    contextMessages = getChannelLevelMessages(chatJid, sinceTimestamp);
+    contextMessages = getMessagesSince(chatJid, sinceTimestamp);
   } else {
-    // Thread context — all messages in this thread
+    // Cross-channel: thread context only
     contextMessages = getThreadMessages(chatJid, threadTs);
   }
 
@@ -255,27 +258,26 @@ async function processGroupMessages(
     .reverse()
     .find((m) => isClearCommand(m.content, group));
   if (latestClear) {
-    const clearThreadTs = threadTs === '__channel__' ? undefined : threadTs;
-    clearGroupSession(chatJid, group.folder, clearThreadTs);
-    if (threadTs === '__channel__') {
+    if (assigned) {
+      clearGroupSession(chatJid, group.folder); // clear unified session
       setAgentCursor(agentFolder, chatJid, latestClear.timestamp);
+    } else {
+      clearGroupSession(chatJid, group.folder, threadTs);
     }
+    const clearReplyTs = threadTs === '__channel__' ? undefined : threadTs;
     await sendToChannel(
       channel,
       chatJid,
       'Session cleared. I will continue in a fresh session from your next message.',
       group.name,
-      clearThreadTs,
+      clearReplyTs,
     );
     return true;
   }
 
-  // Gateway evaluation: all agents (including main) must pass gateway checks
-  // when processing a thread they didn't initiate. This prevents main from
-  // double-responding when another agent is mentioned in a thread.
-  // Exception: channel-level conversations in the assigned channel always pass
-  // for main (it owns the channel).
-  if (threadTs !== '__channel__' || !isMainGroup) {
+  // Gateway evaluation: cross-channel agents must pass gateway checks.
+  // Assigned channel agents skip — gateway was already checked in the message loop.
+  if (!assigned) {
     const hasMatch = contextMessages.some((m) => evaluateGateway(m, group, chatJid));
     if (!hasMatch) return true;
   }
@@ -286,15 +288,15 @@ async function processGroupMessages(
     SLACK_BOT_TOKEN,
   );
 
-  // For channel-level conversations, the reply goes to a thread under the first message
+  // For channel-level conversations, the reply goes to a thread under the first channel-level message
   // For thread conversations, the reply goes to the same thread
   const replyThreadTs = threadTs === '__channel__'
-    ? contextMessages[0]?.id  // Start a new thread under first message
+    ? (contextMessages.find((m) => isChannelLevelMessage(m))?.id ?? contextMessages[0]?.id)
     : threadTs;
 
-  // Advance cursor (only for channel-level; thread messages don't need a cursor)
+  // Advance cursor for assigned channels (unified session tracks all messages)
   const previousCursor = getAgentCursor(agentFolder, chatJid);
-  if (threadTs === '__channel__') {
+  if (assigned) {
     setAgentCursor(
       agentFolder,
       chatJid,
@@ -358,7 +360,7 @@ async function processGroupMessages(
       logger.warn({ group: group.name }, 'Agent error after output was sent, skipping cursor rollback to prevent duplicates');
       return true;
     }
-    if (threadTs === '__channel__') {
+    if (assigned) {
       setAgentCursor(agentFolder, chatJid, previousCursor);
     }
     logger.warn({ group: group.name }, 'Agent error, rolled back message cursor for retry');
@@ -376,8 +378,9 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  // Thread-aware session: look up by (agent, channel, thread)
-  const sessionThreadKey = threadTs ?? '__channel__';
+  // Assigned channels use a unified session key; cross-channel uses per-thread key
+  const assigned = isAssignedChannel(group.folder, chatJid);
+  const sessionThreadKey = assigned ? '__channel__' : (threadTs ?? '__channel__');
   const sessionId = getSession(group.folder, chatJid, sessionThreadKey);
 
   const shouldAcceptSessionUpdate = (): boolean => {
@@ -562,22 +565,27 @@ async function startMessageLoop(): Promise<void> {
             const agentFolder = group.folder;
             const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
+            const agentAssigned = isAssignedChannel(agentFolder, chatJid);
+
             // Quick clear check on the batch
             const latestClear = [...convoMessages]
               .reverse()
               .find((m) => isClearCommand(m.content, group));
             if (latestClear) {
-              const clearThreadTs = threadTs === '__channel__' ? undefined : threadTs;
-              clearGroupSession(chatJid, group.folder, clearThreadTs);
-              if (threadTs === '__channel__') {
+              if (agentAssigned) {
+                clearGroupSession(chatJid, group.folder); // clear unified session
                 setAgentCursor(agentFolder, chatJid, latestClear.timestamp);
+              } else {
+                const clearThreadTs = threadTs === '__channel__' ? undefined : threadTs;
+                clearGroupSession(chatJid, group.folder, clearThreadTs);
               }
+              const clearReplyTs = threadTs === '__channel__' ? undefined : threadTs;
               await sendToChannel(
                 channel,
                 chatJid,
                 'Session cleared. I will continue in a fresh session from your next message.',
                 group.name,
-                clearThreadTs,
+                clearReplyTs,
               );
               continue;
             }
@@ -591,12 +599,14 @@ async function startMessageLoop(): Promise<void> {
               if (!hasMatch) continue;
             }
 
-            if (threadTs === '__channel__') {
-              // Channel-level: each batch creates a new thread, so piping to
-              // an existing container is not possible. Always enqueue.
+            if (agentAssigned) {
+              // Assigned channel: unified session, always enqueue (no pipe attempt)
+              queue.enqueueMessageCheck(chatJid, agentFolder, threadTs, true);
+            } else if (threadTs === '__channel__') {
+              // Cross-channel, channel-level: always enqueue
               queue.enqueueMessageCheck(chatJid, agentFolder, threadTs);
             } else {
-              // Thread messages: try to pipe to active container for this thread
+              // Cross-channel, thread: try to pipe to active container for this thread
               const threadMessages = getThreadMessages(chatJid, threadTs);
               const formatted = await prependChannelMembersToPrompt(
                 chatJid,
@@ -661,7 +671,7 @@ function recoverPendingMessages(): void {
       // Group pending messages by conversation for proper thread routing
       const conversations = groupByConversation(pending);
       for (const [, convo] of conversations) {
-        queue.enqueueMessageCheck(convo.chatJid, group.folder, convo.threadTs);
+        queue.enqueueMessageCheck(convo.chatJid, group.folder, convo.threadTs, true);
       }
     }
   }

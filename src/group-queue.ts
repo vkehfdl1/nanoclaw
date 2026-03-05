@@ -67,7 +67,7 @@ export class GroupQueue {
     this.processMessagesFn = fn;
   }
 
-  enqueueMessageCheck(chatJid: string, groupKey: string, threadTs: string): void {
+  enqueueMessageCheck(chatJid: string, groupKey: string, threadTs: string, isAssigned?: boolean): void {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupKey);
@@ -81,9 +81,11 @@ export class GroupQueue {
     if (state.active) {
       // If the container is idle and the new conversation is for a different
       // channel/thread, preempt so the queued conversation starts sooner.
+      // For assigned channels, same chatJid = same unified session, no preemption needed.
       if (state.idleWaiting) {
-        const sameConversation =
-          state.activeChatJid === chatJid && state.activeThreadTs === threadTs;
+        const sameConversation = isAssigned
+          ? state.activeChatJid === chatJid
+          : state.activeChatJid === chatJid && state.activeThreadTs === threadTs;
         if (!sameConversation) {
           this.closeStdin(groupKey);
         }

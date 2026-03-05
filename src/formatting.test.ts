@@ -111,6 +111,30 @@ describe('formatMessages', () => {
     const result = formatMessages([]);
     expect(result).toBe('<messages>\n\n</messages>');
   });
+
+  it('adds thread attribute for thread replies', () => {
+    const result = formatMessages([
+      makeMsg({ id: 'msg1', thread_ts: 'parent1' }),
+    ]);
+    expect(result).toContain('thread="parent1"');
+    expect(result).toContain('sender="Alice"');
+  });
+
+  it('omits thread attribute for channel-level messages', () => {
+    // Channel-level: thread_ts === id or undefined
+    const result1 = formatMessages([makeMsg({ id: 'msg1', thread_ts: 'msg1' })]);
+    expect(result1).not.toContain('thread=');
+
+    const result2 = formatMessages([makeMsg({ id: 'msg2', thread_ts: undefined })]);
+    expect(result2).not.toContain('thread=');
+  });
+
+  it('escapes thread_ts in thread attribute', () => {
+    const result = formatMessages([
+      makeMsg({ id: 'msg1', thread_ts: 'ts&"<>' }),
+    ]);
+    expect(result).toContain('thread="ts&amp;&quot;&lt;&gt;"');
+  });
 });
 
 // --- Outbound formatting (internal tag stripping + prefix) ---

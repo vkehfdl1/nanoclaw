@@ -1094,48 +1094,6 @@ export function getThreadMessages(
   }));
 }
 
-/**
- * Get channel-level messages (messages that start their own thread, i.e. thread_ts === id).
- * Used for assigned agent's channel-level context.
- */
-export function getChannelLevelMessages(
-  chatJid: string,
-  sinceTimestamp: string,
-): NewMessage[] {
-  const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
-           is_bot_message, agent_source
-    FROM messages
-    WHERE chat_jid = ? AND timestamp > ?
-      AND (thread_ts IS NULL OR thread_ts = id)
-      AND content != '' AND content IS NOT NULL
-    ORDER BY timestamp
-  `;
-  interface RawRow {
-    id: string;
-    chat_jid: string;
-    sender: string;
-    sender_name: string;
-    content: string;
-    timestamp: string;
-    thread_ts: string | null;
-    is_bot_message: number;
-    agent_source: string | null;
-  }
-  const rows = db.prepare(sql).all(chatJid, sinceTimestamp) as RawRow[];
-  return rows.map((row) => ({
-    id: row.id,
-    chat_jid: row.chat_jid,
-    sender: row.sender,
-    sender_name: row.sender_name,
-    content: row.content,
-    timestamp: row.timestamp,
-    thread_ts: row.thread_ts ?? undefined,
-    is_bot_message: !!row.is_bot_message,
-    agent_source: row.agent_source ?? undefined,
-  }));
-}
-
 // --- Registered group accessors ---
 
 type RegisteredGroupRow = {
