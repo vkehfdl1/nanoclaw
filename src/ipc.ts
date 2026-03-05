@@ -603,9 +603,10 @@ export async function processTaskIpc(
         const codeSnippet = typeof data.code_snippet === 'string' && data.code_snippet.trim()
           ? data.code_snippet
           : null;
-        const snippetLanguage = codeSnippet && data.snippet_language === 'python'
-          ? 'python'
-          : null;
+        const snippetLanguage = codeSnippet
+          && (data.snippet_language === 'javascript' || data.snippet_language === 'bash')
+          ? data.snippet_language
+          : codeSnippet ? 'javascript' : null;
         const snippetVenvPath = typeof data.snippet_venv_path === 'string' && data.snippet_venv_path.trim()
           ? data.snippet_venv_path.trim()
           : null;

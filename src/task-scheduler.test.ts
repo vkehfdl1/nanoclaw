@@ -73,8 +73,8 @@ describe('task scheduler', () => {
       group_folder: 'marketer',
       chat_jid: 'slack:C111',
       prompt: 'Send report',
-      code_snippet: 'return False',
-      snippet_language: 'python',
+      code_snippet: 'return false',
+      snippet_language: 'javascript',
       schedule_type: 'once',
       schedule_value: '2026-02-22T00:00:00.000Z',
       context_mode: 'isolated',
@@ -117,8 +117,8 @@ describe('task scheduler', () => {
       group_folder: 'marketer',
       chat_jid: 'slack:C111',
       prompt: 'Summarize updates',
-      code_snippet: 'return context["missing"]',
-      snippet_language: 'python',
+      code_snippet: 'return context.missing.value',
+      snippet_language: 'javascript',
       schedule_type: 'once',
       schedule_value: '2026-02-22T00:00:00.000Z',
       context_mode: 'isolated',
@@ -131,7 +131,7 @@ describe('task scheduler', () => {
       .fn()
       .mockResolvedValueOnce({
         status: 'error' as const,
-        error: 'NameError: missing',
+        error: "TypeError: Cannot read properties of undefined (reading 'value')",
         logFile: '/workspace/group/logs/snippet-error.log',
       })
       .mockResolvedValueOnce({
@@ -150,7 +150,8 @@ describe('task scheduler', () => {
           await onOutput?.({
             status: 'success',
             result: JSON.stringify({
-              code_snippet: 'return {"count": 2, "items": ["a", "b"]}',
+              code_snippet: 'return {count: 2, items: ["a", "b"]}',
+              snippet_language: 'javascript',
             }),
           });
           return { status: 'success' as const, result: null };
@@ -178,7 +179,7 @@ describe('task scheduler', () => {
     expect(sendMessage).toHaveBeenCalledWith('slack:C111', 'Task completed.');
 
     const updated = getTaskById('task-snippet-autofix');
-    expect(updated?.code_snippet).toContain('return {"count": 2');
+    expect(updated?.code_snippet).toContain('return {count: 2');
     expect(updated?.status).toBe('completed');
 
     const secondRunPrompt = runAgent.mock.calls[1]?.[1]?.prompt as string;

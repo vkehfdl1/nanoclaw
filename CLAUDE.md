@@ -67,8 +67,10 @@ The container buildkit caches the build context aggressively. `--no-cache` alone
 
 Snippet-gated behavior:
 
-- `code_snippet` is treated as Python function body (`return False` to skip silently).
-- Any non-`False` return is injected into the agent prompt as `[SNIPPET_GATE_PAYLOAD]`.
-- Optional `snippet_venv_path` selects a Python venv inside container (for example `/workspace/group/.venv`).
+- `snippet_language` is `'javascript'` (default) or `'bash'`.
+- JavaScript snippets run as async function body in Node.js — `return false` to skip silently.
+- Bash snippets run as shell scripts — print `false` to skip silently.
+- Any non-`false` return/output is injected into the agent prompt as `[SNIPPET_GATE_PAYLOAD]`.
+- `context` object (JS) or `$NANOCLAW_CONTEXT_FILE` (Bash) provides task metadata.
 - If snippet execution errors, host writes an error log and immediately runs an auto-fix agent pass to patch the snippet.
 - Task editing is still handled by cancel + recreate.

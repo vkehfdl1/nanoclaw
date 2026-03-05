@@ -47,9 +47,11 @@ export interface ScheduleTaskConfig {
   context_mode?: 'group' | 'isolated';
   /** The prompt to send the agent when this task fires. */
   prompt: string;
-  /** Optional Python snippet gate. return False to skip this run. */
+  /** Optional snippet gate. return false (JS) or print "false" (Bash) to skip this run. */
   code_snippet?: string;
-  /** Optional venv path inside container for snippet execution. */
+  /** Snippet language: 'javascript' (default) or 'bash'. */
+  snippet_language?: 'javascript' | 'bash';
+  /** @deprecated — ignored, kept for config compat. */
   snippet_venv_path?: string;
 }
 
@@ -221,7 +223,7 @@ export function bootstrapGroupSchedule(
         chat_jid: chatJid,
         prompt: taskConfig.prompt,
         code_snippet: taskConfig.code_snippet || null,
-        snippet_language: taskConfig.code_snippet ? 'python' : null,
+        snippet_language: taskConfig.code_snippet ? (taskConfig.snippet_language || 'javascript') : null,
         snippet_venv_path: taskConfig.snippet_venv_path || null,
         schedule_type: taskConfig.schedule_type,
         schedule_value: taskConfig.schedule_value,

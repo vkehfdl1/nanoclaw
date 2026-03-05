@@ -795,7 +795,7 @@ export function createTask(
     task.chat_jid,
     task.prompt,
     task.code_snippet || null,
-    task.snippet_language || 'python',
+    task.snippet_language || 'javascript',
     task.snippet_venv_path || null,
     task.schedule_type,
     task.schedule_value,

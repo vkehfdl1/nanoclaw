@@ -41,7 +41,7 @@ export interface SchedulerDependencies {
 
 interface SnippetFixPayload {
   code_snippet: string;
-  snippet_venv_path?: string | null;
+  snippet_language?: 'javascript' | 'bash' | null;
 }
 
 function computeNextRun(task: ScheduledTask): string | null {
@@ -81,13 +81,13 @@ function parseSnippetFixPayload(text: string): SnippetFixPayload | null {
       if (typeof parsed.code_snippet !== 'string' || !parsed.code_snippet.trim()) {
         return null;
       }
-      const venv = parsed.snippet_venv_path;
-      if (venv !== undefined && venv !== null && typeof venv !== 'string') {
+      const lang = parsed.snippet_language;
+      if (lang !== undefined && lang !== null && lang !== 'javascript' && lang !== 'bash') {
         return null;
       }
       return {
         code_snippet: parsed.code_snippet,
-        snippet_venv_path: venv ?? undefined,
+        snippet_language: lang ?? undefined,
       };
     } catch {
       return null;
@@ -115,24 +115,31 @@ function buildSnippetAutoFixPrompt(
   const logFile = snippetError.logFile || '(unknown)';
   const error = snippetError.error || 'Snippet execution failed';
 
+  const lang = task.snippet_language || 'javascript';
   return [
     'You are fixing a scheduled task code snippet.',
     'Return ONLY JSON with this exact schema and no extra text:',
-    '{"snippet_auto_fix_json":true,"code_snippet":"<python function body>","snippet_venv_path":"/workspace/group/.venv or null"}',
+    `{"snippet_auto_fix_json":true,"code_snippet":"<${lang} snippet body>","snippet_language":"${lang}"}`,
     '',
     'Rules:',
-    '- Provide only function BODY lines. The host wraps it as def __nanoclaw_task_snippet(context): ...',
-    '- The snippet should return exactly False to skip silently when there is nothing to do.',
-    '- Any non-False return will be passed as [SNIPPET_GATE_PAYLOAD] to the scheduled prompt.',
-    '- Do not call send_message or send_agent_message.',
+    lang === 'javascript'
+      ? '- The snippet runs as an async function body: `return (async () => { <your code> })()`'
+      : '- The snippet runs as a bash script. Print "false" to stdout to skip.',
+    lang === 'javascript'
+      ? '- Return exactly `false` to skip silently. Any other return value becomes [SNIPPET_GATE_PAYLOAD].'
+      : '- Print "false" to skip silently. Any other stdout becomes [SNIPPET_GATE_PAYLOAD].',
+    '- `context` is available with task_id, group_folder, chat_jid, schedule_type, schedule_value, run_started_at.',
+    lang === 'javascript'
+      ? '- You can use `require()` for Node.js built-ins and `child_process.execSync` for CLI tools.'
+      : '- Context JSON is at $NANOCLAW_CONTEXT_FILE. GITHUB_TOKEN and other env vars are available.',
     '',
     `Task ID: ${task.id}`,
     `Task Prompt: ${task.prompt}`,
     `Schedule: ${task.schedule_type} ${task.schedule_value}`,
-    `Current snippet_venv_path: ${task.snippet_venv_path || '(none)'}`,
+    `Snippet language: ${lang}`,
     '',
-    'Current broken snippet:',
-    '```python',
+    `Current broken snippet:`,
+    `\`\`\`${lang === 'bash' ? 'bash' : 'javascript'}`,
     snippet,
     '```',
     '',
@@ -247,8 +254,7 @@ async function runTask(
         scheduleType: currentTask.schedule_type,
         scheduleValue: currentTask.schedule_value,
         snippet: currentTask.code_snippet || '',
-        snippetLanguage: currentTask.snippet_language || 'python',
-        snippetVenvPath: currentTask.snippet_venv_path,
+        snippetLanguage: (currentTask.snippet_language as 'javascript' | 'bash') || 'javascript',
         isMain: currentTask.group_folder === MAIN_GROUP_FOLDER,
       });
 
@@ -326,8 +332,7 @@ async function runTask(
 
       updateTask(currentTask.id, {
         code_snippet: patch.code_snippet,
-        snippet_language: 'python',
-        snippet_venv_path: patch.snippet_venv_path ?? null,
+        snippet_language: patch.snippet_language || (currentTask.snippet_language as any) || 'javascript',
       });
       const refreshed = getTaskById(currentTask.id);
       if (refreshed) currentTask = refreshed;

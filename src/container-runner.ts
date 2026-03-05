@@ -54,8 +54,7 @@ export interface TaskSnippetInput {
   scheduleType: 'cron' | 'interval' | 'once';
   scheduleValue: string;
   snippet: string;
-  snippetLanguage?: 'python' | null;
-  snippetVenvPath?: string | null;
+  snippetLanguage?: 'javascript' | 'bash' | null;
   isMain: boolean;
 }
 
@@ -717,66 +716,56 @@ export async function runContainerAgent(
   });
 }
 
-const SNIPPET_RUNNER_SCRIPT = `#!/usr/bin/env python3
-import argparse
-import json
-import textwrap
-import traceback
-
-
-def emit(payload):
-    print(json.dumps(payload, ensure_ascii=False))
-
-
-def to_json_safe(value):
-    try:
-        json.dumps(value)
-        return value
-    except Exception:
-        return str(value)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--snippet", required=True)
-    parser.add_argument("--context", required=True)
-    args = parser.parse_args()
-
-    try:
-        with open(args.context, "r", encoding="utf-8") as f:
-            context = json.load(f)
-        with open(args.snippet, "r", encoding="utf-8") as f:
-            snippet = f.read()
-
-        body = textwrap.indent(snippet, "    ")
-        if not body.strip():
-            body = "    return False\\n"
-        source = (
-            "def __nanoclaw_task_snippet(context):\\n"
-            f"{body}\\n"
-            "result = __nanoclaw_task_snippet(context)\\n"
-        )
-
-        namespace = {}
-        exec(compile(source, args.snippet, "exec"), namespace, namespace)
-        result = namespace.get("result")
-        should_run = not (isinstance(result, bool) and result is False)
-        emit({
-            "ok": True,
-            "should_run": should_run,
-            "payload": to_json_safe(result),
-        })
-    except Exception as err:
-        emit({
-            "ok": False,
-            "error": f"{err.__class__.__name__}: {err}",
-            "traceback": traceback.format_exc(),
-        })
-
-
-if __name__ == "__main__":
-    main()
-`;
+const SNIPPET_RUNNER_SCRIPT = [
+  '#!/usr/bin/env node',
+  "'use strict';",
+  "const fs = require('fs');",
+  '',
+  'function emit(payload) {',
+  "  process.stdout.write(JSON.stringify(payload) + '\\n');",
+  '}',
+  '',
+  'function toJsonSafe(value) {',
+  '  try { JSON.stringify(value); return value; }',
+  '  catch { return String(value); }',
+  '}',
+  '',
+  'function main() {',
+  '  const args = process.argv.slice(2);',
+  '  let snippetPath, contextPath;',
+  '  for (let i = 0; i < args.length; i++) {',
+  "    if (args[i] === '--snippet') snippetPath = args[i + 1];",
+  "    if (args[i] === '--context') contextPath = args[i + 1];",
+  '  }',
+  '  if (!snippetPath || !contextPath) {',
+  "    emit({ ok: false, error: 'Missing --snippet or --context argument' });",
+  '    process.exit(1);',
+  '  }',
+  '',
+  '  try {',
+  "    const context = JSON.parse(fs.readFileSync(contextPath, 'utf-8'));",
+  "    const snippet = fs.readFileSync(snippetPath, 'utf-8').trim();",
+  '    if (!snippet) {',
+  '      emit({ ok: true, should_run: false, payload: false });',
+  '      return;',
+  '    }',
+  '',
+  "    const fn = new Function('context', 'require',",
+  "      'return (async () => { ' + snippet + ' })();'",
+  '    );',
+  '    Promise.resolve(fn(context, require)).then((result) => {',
+  '      const shouldRun = !(result === false);',
+  '      emit({ ok: true, should_run: shouldRun, payload: toJsonSafe(result) });',
+  '    }).catch((err) => {',
+  "      emit({ ok: false, error: String(err), traceback: err.stack || '' });",
+  '    });',
+  '  } catch (err) {',
+  "    emit({ ok: false, error: String(err), traceback: err.stack || '' });",
+  '  }',
+  '}',
+  '',
+  'main();',
+].join('\n');
 
 interface SnippetRunnerResponse {
   ok: boolean;
@@ -786,13 +775,53 @@ interface SnippetRunnerResponse {
   traceback?: string;
 }
 
-function normalizeSnippetVenvPath(rawPath?: string | null): string | null {
-  if (!rawPath) return null;
-  const trimmed = rawPath.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith('/')) return trimmed;
-  return path.posix.join('/workspace/group', trimmed.replace(/^\.?\//, ''));
-}
+// Bash snippet runner — uses Node.js to wrap the bash execution and produce JSON output.
+// This avoids complex shell quoting inside a JS string literal.
+const BASH_SNIPPET_RUNNER_SCRIPT = [
+  '#!/usr/bin/env node',
+  "'use strict';",
+  "const { execSync } = require('child_process');",
+  "const fs = require('fs');",
+  '',
+  'function emit(payload) {',
+  "  process.stdout.write(JSON.stringify(payload) + '\\n');",
+  '}',
+  '',
+  'const snippetPath = process.argv[2];',
+  'const contextPath = process.argv[3];',
+  'if (!snippetPath || !contextPath) {',
+  "  emit({ ok: false, error: 'Missing snippet or context path' });",
+  '  process.exit(1);',
+  '}',
+  '',
+  'try {',
+  "  const env = { ...process.env, NANOCLAW_CONTEXT_FILE: contextPath };",
+  '  let output;',
+  '  try {',
+  "    output = execSync('bash ' + JSON.stringify(snippetPath), {",
+  '      env,',
+  '      encoding: "utf-8",',
+  '      timeout: 40000,',
+  '      stdio: ["pipe", "pipe", "pipe"],',
+  '    }).trim();',
+  '  } catch (err) {',
+  '    const stderr = err.stderr ? err.stderr.toString().slice(-500) : String(err);',
+  "    emit({ ok: false, error: stderr, traceback: '' });",
+  '    process.exit(0);',
+  '  }',
+  '',
+  "  if (output === 'false') {",
+  '    emit({ ok: true, should_run: false, payload: false });',
+  '    process.exit(0);',
+  '  }',
+  '',
+  '  let payload;',
+  '  try { payload = JSON.parse(output); } catch { payload = output; }',
+  '  emit({ ok: true, should_run: true, payload: payload });',
+  '} catch (err) {',
+  "  emit({ ok: false, error: String(err), traceback: err.stack || '' });",
+  '}',
+].join('\n');
 
 function parseSnippetRunnerResponse(stdout: string): SnippetRunnerResponse | null {
   const lines = stdout
@@ -852,10 +881,11 @@ export async function runTaskSnippet(
   group: RegisteredGroup,
   input: TaskSnippetInput,
 ): Promise<TaskSnippetOutput> {
-  if (input.snippetLanguage && input.snippetLanguage !== 'python') {
+  const lang = input.snippetLanguage || 'javascript';
+  if (lang !== 'javascript' && lang !== 'bash') {
     return {
       status: 'error',
-      error: `Unsupported snippet language: ${input.snippetLanguage}`,
+      error: `Unsupported snippet language: ${lang}`,
     };
   }
 
@@ -864,16 +894,21 @@ export async function runTaskSnippet(
 
   const runtimeHostDir = path.join(groupDir, '.nanoclaw', 'snippet-runtime');
   fs.mkdirSync(runtimeHostDir, { recursive: true });
-  const runnerHostPath = path.join(runtimeHostDir, 'run_snippet.py');
-  if (!fs.existsSync(runnerHostPath)) {
-    fs.writeFileSync(runnerHostPath, SNIPPET_RUNNER_SCRIPT);
-  }
 
+  // Write the appropriate runner script
+  const runnerFileName = lang === 'bash' ? 'run_snippet.sh' : 'run_snippet.js';
+  const runnerScript = lang === 'bash' ? BASH_SNIPPET_RUNNER_SCRIPT : SNIPPET_RUNNER_SCRIPT;
+  const runnerHostPath = path.join(runtimeHostDir, runnerFileName);
+  // Always overwrite to pick up runner changes
+  fs.writeFileSync(runnerHostPath, runnerScript, { mode: 0o755 });
+
+  const ext = lang === 'bash' ? '.sh' : '.js';
   const unique = `${input.taskId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const snippetHostPath = path.join(runtimeHostDir, `${unique}.py`);
+  const snippetHostPath = path.join(runtimeHostDir, `${unique}${ext}`);
   const contextHostPath = path.join(runtimeHostDir, `${unique}.context.json`);
-  const snippetContainerPath = `/workspace/group/.nanoclaw/snippet-runtime/${unique}.py`;
-  const contextContainerPath = `/workspace/group/.nanoclaw/snippet-runtime/${unique}.context.json`;
+  const runtimeContainerDir = `/workspace/group/.nanoclaw/snippet-runtime`;
+  const snippetContainerPath = `${runtimeContainerDir}/${unique}${ext}`;
+  const contextContainerPath = `${runtimeContainerDir}/${unique}.context.json`;
 
   const context = {
     task_id: input.taskId,
@@ -889,18 +924,22 @@ export async function runTaskSnippet(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-snippet-${safeName}-${Date.now()}`;
-  const normalizedVenv = normalizeSnippetVenvPath(input.snippetVenvPath);
-  const pythonBin = normalizedVenv
-    ? path.posix.join(normalizedVenv, 'bin', 'python')
-    : 'python3';
-  const commandArgs = [
-    pythonBin,
-    '/workspace/group/.nanoclaw/snippet-runtime/run_snippet.py',
-    '--snippet',
-    snippetContainerPath,
-    '--context',
-    contextContainerPath,
-  ];
+
+  const commandArgs = lang === 'bash'
+    ? [
+        'node',
+        `${runtimeContainerDir}/${runnerFileName}`,
+        snippetContainerPath,
+        contextContainerPath,
+      ]
+    : [
+        'node',
+        `${runtimeContainerDir}/${runnerFileName}`,
+        '--snippet',
+        snippetContainerPath,
+        '--context',
+        contextContainerPath,
+      ];
   const containerArgs = buildContainerArgs(
     group,
     mounts,

@@ -98,8 +98,8 @@ export interface ScheduledTask {
   chat_jid: string;
   prompt: string;
   code_snippet?: string | null;
-  snippet_language?: 'python' | null;
-  snippet_venv_path?: string | null;
+  snippet_language?: 'javascript' | 'bash' | null;
+  snippet_venv_path?: string | null; // @deprecated — ignored, kept for DB compat
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
