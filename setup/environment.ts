@@ -42,11 +42,6 @@ export async function run(_args: string[]): Promise<void> {
   // Check existing config
   const hasEnv = fs.existsSync(path.join(projectRoot, '.env'));
 
-  const authDir = path.join(projectRoot, 'store', 'auth');
-  const hasAuth =
-    fs.existsSync(authDir) &&
-    fs.readdirSync(authDir).length > 0;
-
   let hasRegisteredGroups = false;
   // Check JSON file first (pre-migration)
   if (fs.existsSync(path.join(projectRoot, 'data', 'registered_groups.json'))) {
@@ -68,7 +63,7 @@ export async function run(_args: string[]): Promise<void> {
     }
   }
 
-  logger.info({ platform, wsl, appleContainer, docker, hasEnv, hasAuth, hasRegisteredGroups },
+  logger.info({ platform, wsl, appleContainer, docker, hasEnv, hasRegisteredGroups },
     'Environment check complete');
 
   emitStatus('CHECK_ENVIRONMENT', {
@@ -78,7 +73,6 @@ export async function run(_args: string[]): Promise<void> {
     APPLE_CONTAINER: appleContainer,
     DOCKER: docker,
     HAS_ENV: hasEnv,
-    HAS_AUTH: hasAuth,
     HAS_REGISTERED_GROUPS: hasRegisteredGroups,
     STATUS: 'success',
     LOG: 'logs/setup.log',

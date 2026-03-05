@@ -71,7 +71,7 @@ Compared to the upstream NanoClaw baseline, this repository currently includes:
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
-- **Optional WhatsApp fallback** - Keep compatibility with existing WhatsApp-based setups
+- **Slack I/O only** - Slack is the only chat transport in this fork
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -145,7 +145,7 @@ Skills we'd like to see:
 ## Architecture
 
 ```
-Slack (Socket Mode, primary) / WhatsApp (baileys, legacy fallback) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
+Slack (Socket Mode) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
 ```
 
 Single Node.js process. Agents execute in isolated Linux containers with mounted directories. Per-group message queue with concurrency control. IPC via filesystem.
@@ -153,7 +153,6 @@ Single Node.js process. Agents execute in isolated Linux containers with mounted
 Key files:
 - `src/index.ts` - Orchestrator: state, message loop, agent invocation
 - `src/channels/slack.ts` - Primary Slack connection, mentions, send/receive
-- `src/channels/whatsapp.ts` - Optional legacy WhatsApp fallback channel
 - `src/ipc.ts` - IPC watcher and task processing
 - `src/router.ts` - Message formatting and outbound routing
 - `src/group-queue.ts` - Per-group queue with global concurrency limit
@@ -166,7 +165,7 @@ Key files:
 
 **Why is Slack the default channel?**
 
-Multi-agent coordination in this fork is centered on Slack channels and @mentions. WhatsApp support remains available as an optional legacy fallback when Slack tokens are not configured.
+Multi-agent coordination in this fork is centered on Slack channels and @mentions. Slack configuration is required.
 
 **Why Docker?**
 
