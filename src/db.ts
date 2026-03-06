@@ -65,12 +65,12 @@ function ensurePmAutoragRegistration(): void {
     containerConfig: {
       model: 'claude-opus-4-6',
       envVars: {
-        GITHUB_REPO: 'owner/autorag-research',
+        GITHUB_REPO: 'NomaDamas/AutoRAG-Research',
         ALLOWED_REPOS: 'autorag-research',
       },
       additionalMounts: [
         {
-          hostPath: '~/.nanoclaw/repos/autorag-research',
+          hostPath: '~/Projects/AutoRAG-Research',
           containerPath: 'autorag-research',
           readonly: true,
           excludePatterns: [

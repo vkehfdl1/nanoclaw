@@ -404,6 +404,20 @@ describe('registered_groups multi-channel lookups', () => {
 });
 
 describe('default agent registrations', () => {
+  it('registers pm-autorag with the expected GitHub repo and project mount', () => {
+    _ensureDefaultAgentRegistrationsForTests();
+
+    const channels = getChannelsForAgent('pm-autorag');
+    expect(channels).toEqual(['slack:C09RELR4R9N']);
+
+    const agentsInChannel = getAgentsByChannel(channels[0]);
+    const pm = agentsInChannel.find((g) => g.folder === 'pm-autorag');
+    expect(pm).toBeDefined();
+    expect(pm!.name).toBe('영구');
+    expect(pm!.containerConfig?.envVars?.GITHUB_REPO).toBe('NomaDamas/AutoRAG-Research');
+    expect(pm!.containerConfig?.additionalMounts?.[0]?.hostPath).toBe('~/Projects/AutoRAG-Research');
+  });
+
   it('registers 홍명보 in the marketer channel with expected trigger behavior', () => {
     _ensureDefaultAgentRegistrationsForTests();
 
