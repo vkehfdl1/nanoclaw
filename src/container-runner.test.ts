@@ -207,6 +207,36 @@ describe('container-runner timeout behavior', () => {
     expect(result.newSessionId).toBe('session-456');
   });
 
+  it('mounts global CLAUDE context for main agents', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === '/tmp/nanoclaw-test-groups/global'
+    ));
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      {
+        ...testInput,
+        isMain: true,
+      },
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-global',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    expect(spawnArgs).toContain('/tmp/nanoclaw-test-groups/global:/workspace/global:ro');
+  });
+
   it('adds tmpfs overlays for additional mount excludePatterns', async () => {
     vi.mocked(fs.existsSync).mockImplementation((filePath) => {
       const p = String(filePath);
