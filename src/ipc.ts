@@ -18,6 +18,7 @@ import {
   getTaskById,
   updateTask,
 } from './db.js';
+import { readEnvFile } from './env.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { formatOutbound } from './router.js';
@@ -85,6 +86,7 @@ type HostCommandRunner = (
   options: {
     cwd?: string;
     timeoutMs: number;
+    env?: NodeJS.ProcessEnv;
   },
 ) => Promise<HostCommandResult>;
 
@@ -99,6 +101,7 @@ const defaultHostCommandRunner: HostCommandRunner = (
       args,
       {
         cwd: options.cwd,
+        env: options.env,
         timeout: options.timeoutMs,
         maxBuffer: HOST_CMD_MAX_BUFFER,
       },
@@ -147,6 +150,33 @@ function normalizeRepoName(value: string): string | null {
   }
 
   return segments.join('/');
+}
+
+function expandConfiguredPath(value: string): string {
+  const homeDir = process.env.HOME;
+  if (value === '~' && homeDir) return homeDir;
+  if (homeDir && value.startsWith('~/')) return path.join(homeDir, value.slice(2));
+  return path.resolve(value);
+}
+
+function resolveMountedRepoPath(
+  sourceGroup: string,
+  repo: string,
+  groups: Record<string, RegisteredGroup>,
+): string | null {
+  for (const group of Object.values(groups)) {
+    if (group.folder !== sourceGroup) continue;
+
+    for (const mount of group.containerConfig?.additionalMounts ?? []) {
+      const mountAlias = normalizeRepoName(
+        mount.containerPath?.trim() || path.basename(expandConfiguredPath(mount.hostPath)),
+      );
+      if (mountAlias !== repo) continue;
+      return path.resolve(expandConfiguredPath(mount.hostPath));
+    }
+  }
+
+  return null;
 }
 
 function getAllowedRepos(sourceGroup: string, groups: Record<string, RegisteredGroup>): Set<string> {
@@ -198,7 +228,7 @@ function authorizeRepoAccess(
 
   let repoPath: string;
   try {
-    repoPath = resolveRepoPath(repo);
+    repoPath = resolveMountedRepoPath(sourceGroup, repo, groups) ?? resolveRepoPath(repo);
   } catch (err) {
     return {
       ok: false,
@@ -330,7 +360,26 @@ async function runCommand(
   args: string[],
   options: { cwd?: string; timeoutMs: number },
 ): Promise<HostCommandResult> {
-  return hostCommandRunner(command, args, options);
+  const env = buildHostCommandEnv(command);
+  return hostCommandRunner(command, args, { ...options, env });
+}
+
+function isBootstrapTaskId(taskId: string): boolean {
+  return taskId.startsWith('bootstrap-');
+}
+
+function buildHostCommandEnv(command: string): NodeJS.ProcessEnv | undefined {
+  if (command !== 'gh' && command !== 'codex') return undefined;
+
+  const configured = readEnvFile(['GH_TOKEN', 'GITHUB_TOKEN']);
+  const token = configured.GH_TOKEN || configured.GITHUB_TOKEN;
+  if (!token) return undefined;
+
+  return {
+    ...process.env,
+    GH_TOKEN: token,
+    GITHUB_TOKEN: token,
+  };
 }
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -667,7 +716,12 @@ export async function processTaskIpc(
     case 'pause_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && !isMain && isBootstrapTaskId(task.id)) {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Non-main agent cannot pause bootstrap-managed task',
+          );
+        } else if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -685,7 +739,12 @@ export async function processTaskIpc(
     case 'resume_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && !isMain && isBootstrapTaskId(task.id)) {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Non-main agent cannot resume bootstrap-managed task',
+          );
+        } else if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -703,7 +762,12 @@ export async function processTaskIpc(
     case 'cancel_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && !isMain && isBootstrapTaskId(task.id)) {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Non-main agent cannot cancel bootstrap-managed task',
+          );
+        } else if (task && (isMain || task.group_folder === sourceGroup)) {
           deleteTask(data.taskId);
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -960,51 +1024,6 @@ export async function processTaskIpc(
         const result = await runCommand(
           'git',
           ['pull', 'origin', branch],
-          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
-        );
-        writeTaskResponse(sourceGroup, requestId, {
-          ok: true,
-          stdout: result.stdout,
-          stderr: result.stderr || undefined,
-        });
-      } catch (err) {
-        const details = getHostCommandErrorDetails(err);
-        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
-      }
-      break;
-    }
-
-    case 'gh_create_pr': {
-      if (!requestId) {
-        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
-        break;
-      }
-      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
-      if (!auth.ok) {
-        logger.warn(
-          { sourceGroup, repo: data.repo, reason: auth.error },
-          'Unauthorized gh_create_pr request blocked',
-        );
-        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
-        break;
-      }
-
-      const title = data.title?.trim();
-      const body = data.body;
-      const base = data.base?.trim();
-      const head = data.head?.trim();
-      if (!title || !body || !base || !head) {
-        writeTaskResponse(sourceGroup, requestId, {
-          ok: false,
-          error: 'Missing required fields: title, body, base, head',
-        });
-        break;
-      }
-
-      try {
-        const result = await runCommand(
-          'gh',
-          ['pr', 'create', '--title', title, '--body', body, '--base', base, '--head', head],
           { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
         );
         writeTaskResponse(sourceGroup, requestId, {

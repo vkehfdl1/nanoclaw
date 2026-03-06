@@ -92,7 +92,7 @@ interface AdditionalMount {
 // Example PM agent containerConfig:
 {
   "additionalMounts": [{
-    "hostPath": "~/.nanoclaw/repos/autorag-research",
+    "hostPath": "~/Projects/autorag-research",
     "containerPath": "autorag-research",
     "readonly": true,
     "excludePatterns": ["node_modules", ".venv", "dist", ".git/objects", "__pycache__"]

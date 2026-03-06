@@ -12,8 +12,8 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "setup": "tsx setup/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "NANOCLAW_REPOS_DIR=/tmp/nanoclaw-test-repos vitest run",
+    "test:watch": "NANOCLAW_REPOS_DIR=/tmp/nanoclaw-test-repos vitest"
   },
   "dependencies": {
     "@slack/bolt": "^4.6.0",

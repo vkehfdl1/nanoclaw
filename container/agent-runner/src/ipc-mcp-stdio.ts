@@ -115,7 +115,7 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group.",
+  "Send a message to the user or group immediately while you're still running. Use this for progress updates or genuinely separate follow-up messages. The host keeps the current Slack thread when this run already has one. Scheduled tasks already deliver their final output as a new top-level channel message, so do not repeat the same final answer with this tool.",
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
@@ -127,6 +127,7 @@ server.tool(
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
+      threadTs,
       timestamp: new Date().toISOString(),
     };
 
@@ -209,17 +210,20 @@ If unsure which mode to use, you can ask the user. Examples:
 - "Follow up on my request" \u2192 group (needs to know what was requested)
 - "Generate a daily report" \u2192 isolated (just needs instructions in prompt)
 
-MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It can also use send_message for immediate delivery, or wrap output in <internal> tags to suppress it. Include guidance in the prompt about whether the agent should:
-\u2022 Always send a message (e.g., reminders, daily briefings)
-\u2022 Only send a message when there's something to report (e.g., "notify me if...")
-\u2022 Never send a message (background maintenance tasks)
+  MESSAGING BEHAVIOR - The task agent's final output is sent to the user or group as a new channel message. It can also use send_message for immediate delivery of additional updates, or wrap output in <internal> tags to suppress the final delivery. Include guidance in the prompt about whether the agent should:
+  \u2022 Always send a message (e.g., reminders, daily briefings)
+  \u2022 Only send a message when there's something to report (e.g., "notify me if...")
+  \u2022 Never send a message (background maintenance tasks)
+  \u2022 Avoid sending the same content both via send_message and final output
 
 CODE SNIPPET GATE (OPTIONAL):
-\u2022 code_snippet runs before agent invocation. snippet_language: "javascript" (default) or "bash".
-\u2022 JavaScript: async function body in Node.js — return false to skip silently. Receives a context object with task metadata.
-\u2022 Bash: shell script — print "false" to skip silently. Receives $NANOCLAW_CONTEXT_FILE path with task metadata JSON.
-\u2022 Any non-false return/output is passed to the agent prompt as [SNIPPET_GATE_PAYLOAD].
+\u2022 code_snippet runs before agent invocation as a JavaScript function body or Bash script.
+\u2022 If the snippet returns exactly false (JavaScript) or prints "false" (Bash), the task exits silently (agent is not called).
+\u2022 Any other return value is passed to the agent prompt as a payload block.
 \u2022 If snippet execution errors, host logs it and immediately invokes an auto-fix run for this task.
+\u2022 JavaScript snippets receive a context object with task metadata (task_id, group_folder, chat_jid, schedule_type, schedule_value, run_started_at).
+\u2022 Bash snippets receive the same context via the NANOCLAW_CONTEXT_FILE environment variable.
+\u2022 snippet_venv_path is deprecated and ignored.
 
 SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 \u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
@@ -230,8 +234,9 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
-    code_snippet: z.string().optional().describe('Optional gate snippet. JavaScript: async function body, return false to skip. Bash: shell script, print "false" to skip. Any other return/output becomes the agent payload.'),
-    snippet_language: z.enum(['javascript', 'bash']).default('javascript').optional().describe('Snippet runtime language: "javascript" (default) or "bash".'),
+    code_snippet: z.string().optional().describe('Optional JavaScript function body or Bash script gate. Return false / print "false" to skip silently; any other value becomes prompt payload.'),
+    snippet_language: z.enum(['javascript', 'bash']).default('javascript').optional().describe('Snippet runtime language.'),
+    snippet_venv_path: z.string().optional().describe('Deprecated and ignored.'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
   async (args) => {
@@ -280,6 +285,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       context_mode: args.context_mode || 'group',
       code_snippet: args.code_snippet,
       snippet_language: args.snippet_language || 'javascript',
+      snippet_venv_path: args.snippet_venv_path,
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),
@@ -533,43 +539,6 @@ server.tool(
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `git_pull failed: ${err instanceof Error ? err.message : String(err)}` }],
-        isError: true,
-      };
-    }
-  },
-);
-
-server.tool(
-  'gh_create_pr',
-  'Create a pull request with the GitHub CLI on the host.',
-  {
-    repo: z.string().describe('Allowed repository name'),
-    title: z.string().describe('PR title'),
-    body: z.string().describe('PR body (supports markdown)'),
-    base: z.string().describe('Base branch'),
-    head: z.string().describe('Head branch'),
-  },
-  async (args) => {
-    try {
-      const response = await runTaskWithResponse(
-        {
-          type: 'gh_create_pr',
-          repo: args.repo,
-          title: args.title,
-          body: args.body,
-          base: args.base,
-          head: args.head,
-        },
-        HOST_OP_RESPONSE_TIMEOUT_MS,
-      );
-      const result = formatTaskResult(response, 'Pull request created.');
-      return {
-        content: [{ type: 'text' as const, text: result.text }],
-        isError: result.isError,
-      };
-    } catch (err) {
-      return {
-        content: [{ type: 'text' as const, text: `gh_create_pr failed: ${err instanceof Error ? err.message : String(err)}` }],
         isError: true,
       };
     }

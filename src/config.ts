@@ -32,7 +32,7 @@ const HOME_DIR = process.env.HOME || os.homedir();
 const REPOS_BASE_DIR =
   process.env.NANOCLAW_REPOS_DIR ||
   envConfig.NANOCLAW_REPOS_DIR ||
-  '~/.nanoclaw/repos';
+  '~/Projects';
 
 function expandHomePath(value: string): string {
   if (value === '~') return HOME_DIR;

@@ -19,7 +19,7 @@ Drive issue-to-implementation execution for AutoRAG Research with high signal an
 Before any implementation:
 1. `git_pull` for `autorag-research`.
 2. Read relevant files under `/workspace/extra/autorag-research/`.
-3. Write a precise prompt with target files, expected behavior, and tests.
+3. Write a precise Codex prompt with target files, expected behavior, validation commands, and explicit instructions that Codex must implement, test, commit, push, and open the PR itself.
 
 ## Issue Readiness
 
@@ -39,10 +39,10 @@ Mark `ready` only when the issue has: clear problem statement, concrete goals, t
 1. `git_pull(repo="autorag-research")`
 2. Code review of mounted project files — capture file paths, patterns, constraints.
 3. `git_create_branch(repo="autorag-research", branch="feature/issue-<number>-<slug>")`
-4. Craft Codex prompt: issue body, goals, acceptance criteria, code review findings, project conventions.
+4. Craft Codex prompt: issue body, goals, acceptance criteria, code review findings, project conventions, required validation commands, and explicit instructions to commit, push, and open a PR with `Closes #<number>`.
 5. `codex_exec(repo="autorag-research", branch="<branch>", prompt="<prompt>")`
 6. On failure: comment on issue with failure type + next action + `Tag: human-attention-needed`; stop.
-7. On success: `gh_create_pr` with `Closes #<number>`, concise summary.
+7. On success: expect Codex output to include the PR URL, validation summary, and any follow-up notes.
 8. Post Slack update with result.
 
 ## SecondBrain
