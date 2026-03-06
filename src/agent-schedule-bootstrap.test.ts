@@ -282,6 +282,40 @@ describe('bootstrapGroupSchedule', () => {
     expect(getAllTasks()).toHaveLength(1);
   });
 
+  it('syncs prompt and snippet fields for an existing bootstrap task', () => {
+    const initialConfig: AgentScheduleConfig = {
+      version: '1',
+      tasks: [VALID_CRON_TASK],
+    };
+    writeTmpSchedule('marketer', initialConfig);
+
+    const first = bootstrapGroupSchedule('marketer', MARKETER_JID);
+    expect(first.registered).toBe(1);
+
+    const taskId = configIdToDbId(VALID_CRON_TASK.id);
+    expect(getTaskById(taskId)?.prompt).toBe('Do weekly research.');
+
+    const updatedConfig: AgentScheduleConfig = {
+      version: '1',
+      tasks: [{
+        ...VALID_CRON_TASK,
+        prompt: 'Updated prompt',
+        code_snippet: 'return false;',
+        snippet_language: 'javascript',
+      }],
+    };
+    writeTmpSchedule('marketer', updatedConfig);
+
+    const second = bootstrapGroupSchedule('marketer', MARKETER_JID);
+    expect(second.registered).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    const task = getTaskById(taskId);
+    expect(task?.prompt).toBe('Updated prompt');
+    expect(task?.code_snippet).toBe('return false;');
+    expect(task?.snippet_language).toBe('javascript');
+  });
+
   it('skips disabled tasks', () => {
     const disabledTask: ScheduleTaskConfig = { ...VALID_CRON_TASK, id: 'disabled-task', enabled: false };
     const config: AgentScheduleConfig = { version: '1', tasks: [disabledTask] };
@@ -362,7 +396,7 @@ describe('bootstrapGroupSchedule', () => {
     expect(task!.context_mode).toBe('isolated');
   });
 
-  it('skips already-registered task even if manually created with same db id', () => {
+  it('syncs already-registered task even if manually created with same db id', () => {
     const dbId = configIdToDbId(VALID_CRON_TASK.id);
 
     // Manually create a task with the same DB ID
@@ -386,9 +420,11 @@ describe('bootstrapGroupSchedule', () => {
     expect(result.skipped).toBe(1);
     expect(result.registered).toBe(0);
 
-    // Original task should be unchanged
+    // Existing bootstrap row should now match the file config
     const task = getTaskById(dbId);
-    expect(task!.prompt).toBe('Old prompt');
+    expect(task!.prompt).toBe('Do weekly research.');
+    expect(task!.context_mode).toBe('group');
+    expect(task!.schedule_value).toBe('0 8 * * 1');
   });
 });
 

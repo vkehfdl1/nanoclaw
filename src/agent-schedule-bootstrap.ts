@@ -24,7 +24,7 @@ import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
 import { GROUPS_DIR, TIMEZONE } from './config.js';
-import { createTask, getTaskById } from './db.js';
+import { createTask, getTaskById, updateTask } from './db.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -199,10 +199,36 @@ export function bootstrapGroupSchedule(
     }
 
     const dbId = configIdToDbId(taskConfig.id);
+    const contextMode = taskConfig.context_mode === 'isolated' ? 'isolated' : 'group';
 
-    // Idempotency: skip if already registered
-    if (getTaskById(dbId)) {
-      logger.debug({ groupFolder, taskId: taskConfig.id, dbId }, 'Task already registered, skipping');
+    // Idempotency with drift correction: keep the stable bootstrap task ID,
+    // but sync prompt/snippet/schedule fields if the file changed.
+    const existingTask = getTaskById(dbId);
+    if (existingTask) {
+      const shouldRecomputeNextRun =
+        existingTask.schedule_type !== taskConfig.schedule_type ||
+        existingTask.schedule_value !== taskConfig.schedule_value;
+      const updatedNextRun = shouldRecomputeNextRun
+        ? computeNextRun(taskConfig)
+        : existingTask.next_run;
+
+      updateTask(dbId, {
+        chat_jid: chatJid,
+        prompt: taskConfig.prompt,
+        code_snippet: taskConfig.code_snippet || null,
+        snippet_language: taskConfig.code_snippet
+          ? (taskConfig.snippet_language || 'javascript')
+          : null,
+        snippet_venv_path: taskConfig.snippet_venv_path || null,
+        schedule_type: taskConfig.schedule_type,
+        schedule_value: taskConfig.schedule_value,
+        context_mode: contextMode,
+        next_run: updatedNextRun,
+      });
+      logger.debug(
+        { groupFolder, taskId: taskConfig.id, dbId, driftCorrected: shouldRecomputeNextRun },
+        'Task already registered, synced bootstrap config and skipped creation',
+      );
       result.skipped++;
       continue;
     }
@@ -213,9 +239,6 @@ export function bootstrapGroupSchedule(
       result.failed++;
       continue;
     }
-
-    const contextMode = taskConfig.context_mode === 'isolated' ? 'isolated' : 'group';
-
     try {
       createTask({
         id: dbId,

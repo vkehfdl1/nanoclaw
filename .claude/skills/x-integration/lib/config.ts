@@ -5,10 +5,23 @@
  * Override via environment variables or modify defaults here.
  */
 
+import os from 'os';
 import path from 'path';
+const HOME_DIR = process.env.HOME || os.homedir();
 
-// Project root - can be overridden for different deployments
-const PROJECT_ROOT = process.env.NANOCLAW_ROOT || process.cwd();
+function expandHomePath(value: string): string {
+  if (value === '~') return HOME_DIR;
+  if (value.startsWith('~/')) return path.join(HOME_DIR, value.slice(2));
+  return path.resolve(value);
+}
+
+const DEFAULT_AUTH_ROOT = path.join(HOME_DIR, '.nanoclaw');
+const browserProfileDir = expandHomePath(
+  process.env.X_BROWSER_PROFILE_DIR || path.join(DEFAULT_AUTH_ROOT, 'auth-profiles', 'x'),
+);
+const authMarkerPath = expandHomePath(
+  process.env.X_AUTH_MARKER_PATH || path.join(DEFAULT_AUTH_ROOT, 'auth', 'x-auth.json'),
+);
 
 /**
  * Configuration object with all settings
@@ -20,10 +33,10 @@ export const config = {
   chromePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 
   // Browser profile directory for persistent login sessions
-  browserDataDir: path.join(PROJECT_ROOT, 'data', 'x-browser-profile'),
+  browserDataDir: browserProfileDir,
 
   // Auth state marker file
-  authPath: path.join(PROJECT_ROOT, 'data', 'x-auth.json'),
+  authPath: authMarkerPath,
 
   // Browser viewport settings
   viewport: {
@@ -59,4 +72,3 @@ export const config = {
   // Args to ignore when launching Chrome
   chromeIgnoreDefaultArgs: ['--enable-automation'],
 };
-

@@ -13,6 +13,9 @@ const envConfig = readEnvFile([
   'SLACK_APP_TOKEN',
   'NANOCLAW_REPOS_DIR',
   'NANOCLAW_SECONDBRAIN_DIR',
+  'GITHUB_WEBHOOK_HOST',
+  'GITHUB_WEBHOOK_PORT',
+  'GITHUB_WEBHOOK_PATH',
 ]);
 
 export const ASSISTANT_NAME =
@@ -82,3 +85,17 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
 // Timezone for scheduled tasks and container runtime local time.
 // Defaults to Asia/Seoul; can still be overridden via TZ.
 export const TIMEZONE = process.env.TZ || 'Asia/Seoul';
+export const GITHUB_WEBHOOK_HOST =
+  process.env.GITHUB_WEBHOOK_HOST ||
+  envConfig.GITHUB_WEBHOOK_HOST ||
+  '127.0.0.1';
+export const GITHUB_WEBHOOK_PORT = parseInt(
+  process.env.GITHUB_WEBHOOK_PORT ||
+    envConfig.GITHUB_WEBHOOK_PORT ||
+    '8787',
+  10,
+);
+export const GITHUB_WEBHOOK_PATH =
+  process.env.GITHUB_WEBHOOK_PATH ||
+  envConfig.GITHUB_WEBHOOK_PATH ||
+  '/webhooks/github';

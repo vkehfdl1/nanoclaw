@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { Server } from 'http';
 import path from 'path';
 
 import {
@@ -50,6 +51,7 @@ import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { startGithubWebhookServer, stopGithubWebhookServer } from './github-webhooks.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -59,6 +61,7 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let messageLoopRunning = false;
 
 let slack: SlackChannel | undefined;
+let githubWebhookServer: Server | null = null;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -745,6 +748,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
+    await stopGithubWebhookServer(githubWebhookServer);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
@@ -774,6 +778,22 @@ async function main(): Promise<void> {
   channels.push(slack);
   await slack.connect();
   logger.info('Slack channel connected');
+
+  githubWebhookServer = startGithubWebhookServer({
+    registeredGroups: () => registeredGroups,
+    queue,
+    onProcess: (groupKey, proc, containerName, groupFolder) =>
+      queue.registerProcess(groupKey, proc, containerName, groupFolder),
+    sendMessage: async (jid, rawText, options) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
+        return;
+      }
+      const text = formatOutbound(rawText);
+      if (text) await channel.sendMessage(jid, text, options);
+    },
+  });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({

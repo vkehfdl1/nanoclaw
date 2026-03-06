@@ -119,6 +119,80 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export type GithubWebhookDeliveryStatus =
+  | 'received'
+  | 'ignored'
+  | 'queued'
+  | 'processed'
+  | 'failed';
+
+export interface GithubWebhookDeliveryRecord {
+  delivery_id: string;
+  event_name: string;
+  action: string | null;
+  repository_full_name: string | null;
+  installation_id: number | null;
+  resource_key: string | null;
+  received_at: string;
+  status: GithubWebhookDeliveryStatus;
+  error: string | null;
+  payload_json: string;
+}
+
+export type GithubEventRunStatus =
+  | 'queued'
+  | 'running'
+  | 'success'
+  | 'error'
+  | 'skipped';
+
+export interface GithubEventRunRecord {
+  id: number;
+  delivery_id: string;
+  group_folder: string;
+  resource_type: 'issue' | 'pr';
+  resource_key: string;
+  chat_jid: string;
+  thread_ts: string;
+  session_mode: 'isolated';
+  trigger_kind: string;
+  status: GithubEventRunStatus;
+  result: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GithubNormalizedActor {
+  login: string;
+  type: string;
+  isBot: boolean;
+}
+
+export type GithubNormalizedResourceType = 'issue' | 'pr';
+
+export interface GithubNormalizedEvent {
+  deliveryId: string;
+  eventName:
+    | 'issues'
+    | 'issue_comment'
+    | 'pull_request'
+    | 'pull_request_review'
+    | 'pull_request_review_comment';
+  action: string;
+  installationId: number | null;
+  repositoryFullName: string;
+  repositoryUrl: string;
+  groupFolder: string;
+  chatJid: string;
+  resourceType: GithubNormalizedResourceType;
+  resourceNumber: number;
+  resourceKey: string;
+  triggerKind: string;
+  author: GithubNormalizedActor;
+  payload: Record<string, unknown>;
+}
+
 export interface OutboundMessageOptions {
   threadTs?: string;
   agentLabel?: string;

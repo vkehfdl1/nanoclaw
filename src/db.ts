@@ -5,7 +5,18 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { AgentGateway, NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
+import {
+  AgentGateway,
+  GithubEventRunRecord,
+  GithubEventRunStatus,
+  GithubNormalizedEvent,
+  GithubWebhookDeliveryRecord,
+  GithubWebhookDeliveryStatus,
+  NewMessage,
+  RegisteredGroup,
+  ScheduledTask,
+  TaskRunLog,
+} from './types.js';
 
 let db: Database.Database;
 
@@ -110,6 +121,11 @@ function ensureMarketerRegistration(): void {
           hostPath: '~/.nanoclaw/auth',
           containerPath: 'auth',
           readonly: true,
+        },
+        {
+          hostPath: '~/.nanoclaw/auth-profiles',
+          containerPath: 'auth-profiles',
+          readonly: false,
         },
       ],
     },
@@ -228,6 +244,34 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1,
       role TEXT
+    );
+    CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      event_name TEXT NOT NULL,
+      action TEXT,
+      repository_full_name TEXT,
+      installation_id INTEGER,
+      resource_key TEXT,
+      received_at TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error TEXT,
+      payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS github_event_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_id TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_key TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      thread_ts TEXT NOT NULL,
+      session_mode TEXT NOT NULL DEFAULT 'isolated',
+      trigger_kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      result TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
 
@@ -365,6 +409,10 @@ function createSchema(database: Database.Database): void {
 
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_registered_groups_folder ON registered_groups(folder);
+    CREATE INDEX IF NOT EXISTS idx_github_webhook_deliveries_status ON github_webhook_deliveries(status, received_at);
+    CREATE INDEX IF NOT EXISTS idx_github_event_runs_delivery ON github_event_runs(delivery_id);
+    CREATE INDEX IF NOT EXISTS idx_github_event_runs_group_status ON github_event_runs(group_folder, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_github_event_runs_resource ON github_event_runs(resource_key, created_at);
   `);
 
   // Migrate old single-key sessions table to thread-aware schema
@@ -761,12 +809,14 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
+      | 'chat_jid'
       | 'prompt'
       | 'code_snippet'
       | 'snippet_language'
       | 'snippet_venv_path'
       | 'schedule_type'
       | 'schedule_value'
+      | 'context_mode'
       | 'next_run'
       | 'status'
     >
@@ -775,6 +825,10 @@ export function updateTask(
   const fields: string[] = [];
   const values: unknown[] = [];
 
+  if (updates.chat_jid !== undefined) {
+    fields.push('chat_jid = ?');
+    values.push(updates.chat_jid);
+  }
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
     values.push(updates.prompt);
@@ -798,6 +852,10 @@ export function updateTask(
   if (updates.schedule_value !== undefined) {
     fields.push('schedule_value = ?');
     values.push(updates.schedule_value);
+  }
+  if (updates.context_mode !== undefined) {
+    fields.push('context_mode = ?');
+    values.push(updates.context_mode);
   }
   if (updates.next_run !== undefined) {
     fields.push('next_run = ?');
@@ -1289,6 +1347,212 @@ export function getChannelsForAgent(folder: string): string[] {
     )
     .all(folder) as Array<{ jid: string }>;
   return rows.map((row) => row.jid);
+}
+
+function normalizeGithubRepoFullName(repo: string): string {
+  return repo.trim().toLowerCase();
+}
+
+export function findPmAgentByGithubRepo(
+  repoFullName: string,
+): ((RegisteredGroup & { jid: string }) | undefined) {
+  const target = normalizeGithubRepoFullName(repoFullName);
+  const rows = db
+    .prepare(
+      `SELECT * FROM registered_groups
+       WHERE role = 'pm-agent'
+       ORDER BY added_at, folder`,
+    )
+    .all() as RegisteredGroupRow[];
+
+  for (const row of rows) {
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) continue;
+    const configuredRepo = mapped.containerConfig?.envVars?.GITHUB_REPO;
+    if (!configuredRepo) continue;
+    if (normalizeGithubRepoFullName(configuredRepo) === target) {
+      return mapped;
+    }
+  }
+
+  return undefined;
+}
+
+interface GithubWebhookDeliveryRow {
+  delivery_id: string;
+  event_name: string;
+  action: string | null;
+  repository_full_name: string | null;
+  installation_id: number | null;
+  resource_key: string | null;
+  received_at: string;
+  status: GithubWebhookDeliveryStatus;
+  error: string | null;
+  payload_json: string;
+}
+
+export function getGithubWebhookDelivery(
+  deliveryId: string,
+): GithubWebhookDeliveryRecord | undefined {
+  return db
+    .prepare('SELECT * FROM github_webhook_deliveries WHERE delivery_id = ?')
+    .get(deliveryId) as GithubWebhookDeliveryRecord | undefined;
+}
+
+export function createGithubWebhookDelivery(
+  delivery: GithubWebhookDeliveryRecord,
+): void {
+  db.prepare(
+    `INSERT INTO github_webhook_deliveries (
+      delivery_id,
+      event_name,
+      action,
+      repository_full_name,
+      installation_id,
+      resource_key,
+      received_at,
+      status,
+      error,
+      payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    delivery.delivery_id,
+    delivery.event_name,
+    delivery.action,
+    delivery.repository_full_name,
+    delivery.installation_id,
+    delivery.resource_key,
+    delivery.received_at,
+    delivery.status,
+    delivery.error,
+    delivery.payload_json,
+  );
+}
+
+export function updateGithubWebhookDelivery(
+  deliveryId: string,
+  updates: Partial<
+    Pick<
+      GithubWebhookDeliveryRecord,
+      'action' | 'repository_full_name' | 'installation_id' | 'resource_key' | 'status' | 'error'
+    >
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.action !== undefined) {
+    fields.push('action = ?');
+    values.push(updates.action);
+  }
+  if (updates.repository_full_name !== undefined) {
+    fields.push('repository_full_name = ?');
+    values.push(updates.repository_full_name);
+  }
+  if (updates.installation_id !== undefined) {
+    fields.push('installation_id = ?');
+    values.push(updates.installation_id);
+  }
+  if (updates.resource_key !== undefined) {
+    fields.push('resource_key = ?');
+    values.push(updates.resource_key);
+  }
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(deliveryId);
+  db.prepare(
+    `UPDATE github_webhook_deliveries SET ${fields.join(', ')} WHERE delivery_id = ?`,
+  ).run(...values);
+}
+
+type GithubEventRunRow = Omit<GithubEventRunRecord, 'id'> & { id: number };
+
+export function createGithubEventRun(
+  run: Omit<GithubEventRunRecord, 'id'>,
+): number {
+  const info = db.prepare(
+    `INSERT INTO github_event_runs (
+      delivery_id,
+      group_folder,
+      resource_type,
+      resource_key,
+      chat_jid,
+      thread_ts,
+      session_mode,
+      trigger_kind,
+      status,
+      result,
+      error,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    run.delivery_id,
+    run.group_folder,
+    run.resource_type,
+    run.resource_key,
+    run.chat_jid,
+    run.thread_ts,
+    run.session_mode,
+    run.trigger_kind,
+    run.status,
+    run.result,
+    run.error,
+    run.created_at,
+    run.updated_at,
+  );
+  return Number(info.lastInsertRowid);
+}
+
+export function getGithubEventRun(
+  id: number,
+): GithubEventRunRecord | undefined {
+  return db
+    .prepare('SELECT * FROM github_event_runs WHERE id = ?')
+    .get(id) as GithubEventRunRow | undefined;
+}
+
+export function updateGithubEventRun(
+  id: number,
+  updates: Partial<
+    Pick<GithubEventRunRecord, 'status' | 'result' | 'error' | 'updated_at'>
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.result !== undefined) {
+    fields.push('result = ?');
+    values.push(updates.result);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+  if (updates.updated_at !== undefined) {
+    fields.push('updated_at = ?');
+    values.push(updates.updated_at);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(
+    `UPDATE github_event_runs SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
 }
 
 // --- JSON migration ---

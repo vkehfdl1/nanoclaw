@@ -24,17 +24,23 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+import {
+  DEFAULT_PM_EXCLUDE_PATTERNS,
+  deriveRepoAlias,
+} from '../src/pm-agent-config.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const GROUPS_DIR = path.join(PROJECT_ROOT, 'groups');
+const TEMPLATES_DIR = path.join(PROJECT_ROOT, 'templates', 'pm-agent');
 const STORE_DIR = path.join(PROJECT_ROOT, 'store');
 const DB_PATH = path.join(STORE_DIR, 'messages.db');
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
 function parseArgs(): {
-  name: string;
+  displayName: string;
+  slug: string;
   channel: string;
   repo: string;
   codebase: string;
@@ -106,7 +112,8 @@ function parseArgs(): {
   const model = get('--model');
 
   return {
-    name: safeName,
+    displayName: name,
+    slug: safeName,
     channel,
     repo,
     codebase: resolvedCodebase,
@@ -176,7 +183,7 @@ function createGroupFolder(folderName: string): string {
 
 // ─── Subagents JSON ────────────────────────────────────────────────────────────
 
-function createSubagentsJson(groupDir: string, repo: string): void {
+function createSubagentsJson(groupDir: string, repo: string, repoAlias: string): void {
   const subagentsPath = path.join(groupDir, '.nanoclaw', 'subagents.json');
   if (!fs.existsSync(subagentsPath)) {
     const subagents = {
@@ -185,15 +192,15 @@ function createSubagentsJson(groupDir: string, repo: string): void {
           description:
             'Implementation agent. Give it a spec file path. It branches, implements, and opens a PR.',
           prompt:
-            `You are Codex, a focused software engineer. You receive a path to a spec file and implement the task described. Work on /workspace/codebase. Follow existing code patterns. Write tests. Create a git branch, commit, push, and open a PR with gh CLI to the repo ${repo}. Return the PR URL when done. Only implement what the spec says.`,
+            `You are Codex, a focused software engineer. You receive a path to a spec file and implement the task described. Read project context from /workspace/extra/${repoAlias}. Follow existing code patterns. Write tests. Create a git branch, commit, push, and open a PR with gh CLI to the repo ${repo}. Return the PR URL when done. Only implement what the spec says.`,
           tools: ['Read', 'Edit', 'Write', 'Bash', 'Glob', 'Grep'],
           model: 'sonnet',
         },
         reviewer: {
           description:
-            'Code review agent. Give it a PR number. It reviews the diff and posts GitHub review comments.',
+            'Behavior-first PR review agent. Give it a PR number. It validates the changed behavior by running the system, then posts a GitHub review.',
           prompt:
-            `You are Reviewer, a senior engineer doing code review. You receive a PR number. Use gh CLI to read the PR diff and context for repo ${repo}. Review for correctness, security, test coverage, performance, and code style consistency. Post inline comments using gh api. Submit the review as APPROVE, REQUEST_CHANGES, or COMMENT. Be specific and constructive.`,
+            `You are Reviewer, a senior engineer doing pull request validation for repo ${repo}. Review behavior first, not code aesthetics. Use gh CLI to read the PR diff and context, then run the changed system locally when possible. For frontend work, open the app and exercise the changed flow directly. For backend work, run the service and validate real endpoints/commands. Tests and code inspection are supporting evidence, not the main proof. Submit the review as APPROVE, REQUEST_CHANGES, or COMMENT. Be specific, cite actual behavior observed, and never auto-merge.`,
           tools: ['Bash', 'Read', 'Grep', 'Glob'],
           model: 'sonnet',
         },
@@ -205,19 +212,44 @@ function createSubagentsJson(groupDir: string, repo: string): void {
 
 // ─── CLAUDE.md setup ──────────────────────────────────────────────────────────
 
-function ensureClaudeMd(groupDir: string, projectName: string, repo: string): void {
-  // Copy from pm-agent template if not already present in this group folder
+function renderPmTemplate(content: string, values: Record<string, string>): string {
+  let rendered = content;
+  for (const [token, value] of Object.entries(values)) {
+    rendered = rendered.split(token).join(value);
+  }
+  return rendered;
+}
+
+function ensureClaudeMd(
+  groupDir: string,
+  values: Record<string, string>,
+): void {
   const targetClaudeMd = path.join(groupDir, 'CLAUDE.md');
-  const templateClaudeMd = path.join(GROUPS_DIR, 'pm-agent', 'CLAUDE.md');
+  const templateClaudeMd = path.join(TEMPLATES_DIR, 'CLAUDE.md');
 
   if (!fs.existsSync(targetClaudeMd) && fs.existsSync(templateClaudeMd)) {
     let content = fs.readFileSync(templateClaudeMd, 'utf-8');
-    // Stamp the project name and repo into the CLAUDE.md for self-awareness
+    content = renderPmTemplate(content, values);
     content =
-      `<!-- PM Agent: ${projectName} | Repo: ${repo} -->\n` +
       `<!-- This file was generated by register-pm-agent.ts. Edit to customize. -->\n\n` +
       content;
     fs.writeFileSync(targetClaudeMd, content);
+  }
+}
+
+function ensureScheduleJson(
+  groupDir: string,
+  values: Record<string, string>,
+): void {
+  const targetSchedule = path.join(groupDir, 'schedule.json');
+  const templateSchedule = path.join(TEMPLATES_DIR, 'schedule.json');
+
+  if (!fs.existsSync(targetSchedule) && fs.existsSync(templateSchedule)) {
+    const content = renderPmTemplate(
+      fs.readFileSync(templateSchedule, 'utf-8'),
+      values,
+    );
+    fs.writeFileSync(targetSchedule, content.endsWith('\n') ? content : `${content}\n`);
   }
 }
 
@@ -229,6 +261,7 @@ function registerInDatabase(opts: {
   folder: string;
   trigger: string;
   repo: string;
+  repoAlias: string;
   channel: string;
   codebase: string;
   secondbrain: string | null;
@@ -249,18 +282,20 @@ function registerInDatabase(opts: {
     hostPath: string;
     containerPath: string;
     readonly: boolean;
+    excludePatterns?: string[];
   }> = [
     {
       hostPath: opts.codebase,
-      containerPath: '/workspace/codebase',
-      readonly: false,
+      containerPath: opts.repoAlias,
+      readonly: true,
+      excludePatterns: DEFAULT_PM_EXCLUDE_PATTERNS,
     },
   ];
 
   if (opts.secondbrain) {
     additionalMounts.push({
       hostPath: opts.secondbrain,
-      containerPath: '/workspace/secondbrain',
+      containerPath: `${opts.repoAlias}-secondbrain`,
       readonly: false,
     });
   }
@@ -274,8 +309,12 @@ function registerInDatabase(opts: {
     additionalMounts,
     envVars: {
       GITHUB_REPO: opts.repo,
+      ALLOWED_REPOS: opts.repoAlias,
       SLACK_CHANNEL_ID: opts.channel,
       PM_PROJECT_NAME: opts.name,
+      ...(opts.secondbrain
+        ? { PM_SECONDBRAIN_PATH: `/workspace/extra/${opts.repoAlias}-secondbrain` }
+        : {}),
     },
   };
   if (opts.model) {
@@ -303,10 +342,18 @@ function registerInDatabase(opts: {
 function main(): void {
   const opts = parseArgs();
 
-  const folderName = `pm-${opts.name}`;
+  const folderName = `pm-${opts.slug}`;
   const jid = `slack:${opts.channel}`;
+  const repoAlias = deriveRepoAlias(opts.repo);
+  const templateValues = {
+    '__PROJECT_NAME__': opts.displayName,
+    '__PROJECT_NAME_JSON__': JSON.stringify(opts.displayName).slice(1, -1),
+    '__GROUP_FOLDER__': folderName,
+    '__REPO_ALIAS__': repoAlias,
+    '__BOT_NAME__': opts.botName,
+  };
 
-  console.log(`\n🤖  Registering PM agent for project: ${opts.name}`);
+  console.log(`\n🤖  Registering PM agent for project: ${opts.displayName}`);
   console.log(`   Slack channel:  ${opts.channel}  (JID: ${jid})`);
   console.log(`   GitHub repo:    ${opts.repo}`);
   console.log(`   Codebase:       ${opts.codebase}`);
@@ -322,20 +369,23 @@ function main(): void {
   console.log(`✅  Created group folder: ${groupDir}`);
 
   // 2. Write subagents.json
-  createSubagentsJson(groupDir, opts.repo);
+  createSubagentsJson(groupDir, opts.repo, repoAlias);
   console.log(`✅  Wrote .nanoclaw/subagents.json (Codex + Reviewer sub-agents)`);
 
-  // 3. Ensure CLAUDE.md (copy from template)
-  ensureClaudeMd(groupDir, opts.name, opts.repo);
+  // 3. Ensure CLAUDE.md + schedule.json from templates
+  ensureClaudeMd(groupDir, templateValues);
   console.log(`✅  Ensured CLAUDE.md in group folder`);
+  ensureScheduleJson(groupDir, templateValues);
+  console.log(`✅  Ensured schedule.json in group folder`);
 
   // 4. Register in database
   registerInDatabase({
     jid,
-    name: opts.name,
+    name: opts.displayName,
     folder: folderName,
     trigger: opts.botName,
     repo: opts.repo,
+    repoAlias,
     channel: opts.channel,
     codebase: opts.codebase,
     secondbrain: opts.secondbrain,
@@ -344,7 +394,7 @@ function main(): void {
   console.log(`✅  Registered group in database (JID: ${jid})`);
 
   console.log(`
-✨  PM agent "${opts.name}" is ready!
+✨  PM agent "${opts.displayName}" is ready!
 
 Next steps:
   1. Make sure the Slack bot is invited to #your-channel:

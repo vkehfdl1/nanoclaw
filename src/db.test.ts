@@ -4,19 +4,26 @@ import {
   _ensureDefaultAgentRegistrationsForTests,
   _initTestDatabase,
   claimDueTasks,
+  createGithubEventRun,
+  createGithubWebhookDelivery,
   createTask,
   deleteTask,
+  findPmAgentByGithubRepo,
   getAgentsByChannel,
   getAllChats,
   getAllRegisteredGroups,
   getAllUniqueAgents,
   getChannelsForAgent,
+  getGithubEventRun,
+  getGithubWebhookDelivery,
   getMessagesSince,
   getNewMessages,
   getTaskById,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
+  updateGithubEventRun,
+  updateGithubWebhookDelivery,
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
@@ -236,6 +243,77 @@ describe('getNewMessages', () => {
   });
 });
 
+describe('GitHub PM helpers', () => {
+  it('finds a PM agent by configured GITHUB_REPO', () => {
+    setRegisteredGroup('slack:C123', {
+      name: 'PM',
+      folder: 'pm-test',
+      trigger: '@PM',
+      aliases: ['pm'],
+      added_at: '2024-01-01T00:00:00.000Z',
+      gateway: { rules: [{ match: 'self_mention' }] },
+      role: 'pm-agent',
+      containerConfig: {
+        envVars: {
+          GITHUB_REPO: 'Owner/Repo',
+          ALLOWED_REPOS: 'repo',
+        },
+      },
+    });
+
+    const group = findPmAgentByGithubRepo('owner/repo');
+    expect(group?.jid).toBe('slack:C123');
+    expect(group?.folder).toBe('pm-test');
+  });
+
+  it('stores and updates GitHub webhook deliveries and event runs', () => {
+    createGithubWebhookDelivery({
+      delivery_id: 'delivery-1',
+      event_name: 'issues',
+      action: 'opened',
+      repository_full_name: 'owner/repo',
+      installation_id: 123,
+      resource_key: null,
+      received_at: '2024-01-01T00:00:00.000Z',
+      status: 'received',
+      error: null,
+      payload_json: '{"ok":true}',
+    });
+
+    updateGithubWebhookDelivery('delivery-1', {
+      status: 'queued',
+      resource_key: 'github:issue:owner/repo#42',
+    });
+
+    const runId = createGithubEventRun({
+      delivery_id: 'delivery-1',
+      group_folder: 'pm-test',
+      resource_type: 'issue',
+      resource_key: 'github:issue:owner/repo#42',
+      chat_jid: 'slack:C123',
+      thread_ts: 'github:issue:owner/repo#42',
+      session_mode: 'isolated',
+      trigger_kind: 'issue-opened',
+      status: 'queued',
+      result: null,
+      error: null,
+      created_at: '2024-01-01T00:00:00.000Z',
+      updated_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    updateGithubEventRun(runId, {
+      status: 'success',
+      result: 'done',
+      updated_at: '2024-01-01T00:05:00.000Z',
+    });
+
+    expect(getGithubWebhookDelivery('delivery-1')?.status).toBe('queued');
+    expect(getGithubWebhookDelivery('delivery-1')?.resource_key).toBe('github:issue:owner/repo#42');
+    expect(getGithubEventRun(runId)?.status).toBe('success');
+    expect(getGithubEventRun(runId)?.result).toBe('done');
+  });
+});
+
 // --- storeChatMetadata ---
 
 describe('storeChatMetadata', () => {
@@ -408,6 +486,18 @@ describe('default agent registrations', () => {
     expect(marketer!.name).toBe('홍명보');
     expect(marketer!.requiresTrigger).toBe(false);
     expect(marketer!.role).toBe('marketer');
+    expect(marketer!.containerConfig?.additionalMounts).toEqual([
+      {
+        hostPath: '~/.nanoclaw/auth',
+        containerPath: 'auth',
+        readonly: true,
+      },
+      {
+        hostPath: '~/.nanoclaw/auth-profiles',
+        containerPath: 'auth-profiles',
+        readonly: false,
+      },
+    ]);
 
     // 도비 is no longer auto-registered in the marketer channel.
     const dobby = agentsInChannel.find((g) => g.folder === 'main');

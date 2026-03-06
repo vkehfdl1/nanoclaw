@@ -14,10 +14,11 @@ import { config, cleanupLockFiles } from '../lib/browser.js';
 
 async function setup(): Promise<void> {
   console.log('=== X (Twitter) Authentication Setup ===\n');
-  console.log('This will open Chrome for you to log in to X.');
-  console.log('Your login session will be saved for automated interactions.\n');
+  console.log('This will open Chrome with a dedicated persistent profile for X.');
+  console.log('Your login session will be saved in that profile for future automated interactions.\n');
   console.log(`Chrome path: ${config.chromePath}`);
-  console.log(`Profile dir: ${config.browserDataDir}\n`);
+  console.log(`Profile dir: ${config.browserDataDir}`);
+  console.log(`Auth marker: ${config.authPath}\n`);
 
   // Ensure directories exist
   fs.mkdirSync(path.dirname(config.authPath), { recursive: true });
@@ -71,7 +72,8 @@ async function setup(): Promise<void> {
     }, null, 2));
 
     console.log('\n✅ Authentication successful!');
-    console.log(`Session saved to: ${config.browserDataDir}`);
+    console.log(`Persistent profile saved to: ${config.browserDataDir}`);
+    console.log(`Auth marker saved to: ${config.authPath}`);
     console.log('\nYou can now use X integration features.');
   } else {
     console.log('\n❌ Could not verify login status.');

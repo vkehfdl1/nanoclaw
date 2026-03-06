@@ -46,6 +46,7 @@ export function writeResult(result: ScriptResult): void {
  * Clean up browser lock files
  */
 export function cleanupLockFiles(): void {
+  fs.mkdirSync(config.browserDataDir, { recursive: true });
   for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
     const lockPath = path.join(config.browserDataDir, lockFile);
     if (fs.existsSync(lockPath)) {
@@ -75,6 +76,8 @@ export async function getBrowserContext(): Promise<BrowserContext> {
     throw new Error('X authentication not configured. Run /x-integration to complete login.');
   }
 
+  fs.mkdirSync(path.dirname(config.authPath), { recursive: true });
+  fs.mkdirSync(config.browserDataDir, { recursive: true });
   cleanupLockFiles();
 
   const context = await chromium.launchPersistentContext(config.browserDataDir, {
