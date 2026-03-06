@@ -115,19 +115,6 @@ function ensureMarketerRegistration(): void {
     },
   });
 
-  // 도비 also present in marketer channel (responds when @mentioned)
-  ensureDefaultRegisteredGroup(MARKETER_CHANNEL_JID, {
-    name: '도비',
-    folder: MAIN_FOLDER,
-    trigger: '@도비',
-    aliases: ['dobby', '도비'],
-    requiresTrigger: true,
-    gateway: { rules: [{ match: 'self_mention' }] },
-    role: 'main',
-    containerConfig: {
-      model: 'claude-opus-4-6',
-    },
-  });
 }
 
 function ensureTodomonRegistration(): void {
