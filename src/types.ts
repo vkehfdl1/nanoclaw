@@ -2,6 +2,7 @@ export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}
   readonly?: boolean; // Default: true for safety
+  excludePatterns?: string[]; // Optional mount-relative paths to mask with tmpfs overlays
 }
 
 /**
@@ -31,15 +32,50 @@ export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
   model?: string; // Optional per-group Claude model override (e.g., "claude-opus-4-6")
+  /**
+   * Per-group environment variables injected into the container at runtime.
+   * Used by PM agents to receive project-specific config (GITHUB_REPO, SLACK_CHANNEL_ID, etc.).
+   * Values are passed via `-e KEY=VALUE` docker flags — never written to disk.
+   * Do NOT put secrets here; use the .env file for secrets like GITHUB_TOKEN.
+   */
+  envVars?: Record<string, string>;
+}
+
+export interface GatewayRule {
+  channel?: string[];       // Only match in these channels (AND with other fields)
+  match?: 'self_mention' | 'any_message';
+  keywords?: string[];      // At least one keyword must be present (OR within, AND with other fields)
+}
+
+export interface AgentGateway {
+  rules: GatewayRule[];     // Rules are evaluated with OR (any match triggers)
+  excludeBotMessages?: boolean; // Default: true
 }
 
 export interface RegisteredGroup {
   name: string;
   folder: string;
+  /** @deprecated Use aliases instead */
   trigger: string;
+  aliases: string[];
   added_at: string;
   containerConfig?: ContainerConfig;
-  requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  /** @deprecated Use gateway instead */
+  requiresTrigger?: boolean;
+  gateway: AgentGateway;
+  /**
+   * Agent role identifier. Use 'pm-agent' for project manager agents that
+   * operate in Slack channels. Other values: 'marketer', 'todomon', etc.
+   * If omitted, the group behaves as a generic registered group.
+   */
+  role?: string;
+}
+
+export interface ChannelMember {
+  userId: string;
+  displayName: string;
+  isBot: boolean;
+  agentRole?: string;
 }
 
 export interface NewMessage {
@@ -51,6 +87,9 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  agent_source?: string;
+  /** Slack thread timestamp — set for messages that belong to (or start) a thread */
+  thread_ts?: string;
 }
 
 export interface ScheduledTask {
@@ -58,13 +97,16 @@ export interface ScheduledTask {
   group_folder: string;
   chat_jid: string;
   prompt: string;
+  code_snippet?: string | null;
+  snippet_language?: 'javascript' | 'bash' | null;
+  snippet_venv_path?: string | null; // @deprecated — ignored, kept for DB compat
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
-  status: 'active' | 'paused' | 'completed';
+  status: 'active' | 'running' | 'paused' | 'completed';
   created_at: string;
 }
 
@@ -77,19 +119,102 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export type GithubWebhookDeliveryStatus =
+  | 'received'
+  | 'ignored'
+  | 'queued'
+  | 'processed'
+  | 'failed';
+
+export interface GithubWebhookDeliveryRecord {
+  delivery_id: string;
+  event_name: string;
+  action: string | null;
+  repository_full_name: string | null;
+  installation_id: number | null;
+  resource_key: string | null;
+  received_at: string;
+  status: GithubWebhookDeliveryStatus;
+  error: string | null;
+  payload_json: string;
+}
+
+export type GithubEventRunStatus =
+  | 'queued'
+  | 'running'
+  | 'success'
+  | 'error'
+  | 'skipped';
+
+export interface GithubEventRunRecord {
+  id: number;
+  delivery_id: string;
+  group_folder: string;
+  resource_type: 'issue' | 'pr';
+  resource_key: string;
+  chat_jid: string;
+  thread_ts: string;
+  session_mode: 'isolated';
+  trigger_kind: string;
+  status: GithubEventRunStatus;
+  result: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GithubNormalizedActor {
+  login: string;
+  type: string;
+  isBot: boolean;
+}
+
+export type GithubNormalizedResourceType = 'issue' | 'pr';
+
+export interface GithubNormalizedEvent {
+  deliveryId: string;
+  eventName:
+    | 'issues'
+    | 'issue_comment'
+    | 'pull_request'
+    | 'pull_request_review'
+    | 'pull_request_review_comment';
+  action: string;
+  installationId: number | null;
+  repositoryFullName: string;
+  repositoryUrl: string;
+  groupFolder: string;
+  chatJid: string;
+  resourceType: GithubNormalizedResourceType;
+  resourceNumber: number;
+  resourceKey: string;
+  triggerKind: string;
+  author: GithubNormalizedActor;
+  payload: Record<string, unknown>;
+}
+
+export interface OutboundMessageOptions {
+  threadTs?: string;
+  agentLabel?: string;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(
+    jid: string,
+    text: string,
+    options?: OutboundMessageOptions,
+  ): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: file upload. Channels that support it implement it.
-  sendFile?(jid: string, filePath: string, comment?: string): Promise<void>;
+  sendFile?(jid: string, filePath: string, comment?: string, agentLabel?: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
@@ -97,7 +222,7 @@ export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
-// channels that sync names separately (WhatsApp syncGroupMetadata) omit it.
+// channels that sync names separately can omit it.
 export type OnChatMetadata = (
   chatJid: string,
   timestamp: string,

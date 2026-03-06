@@ -17,6 +17,22 @@ groups/main/*
 groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
+!groups/pm-autorag/
+groups/pm-autorag/*
+!groups/pm-autorag/CLAUDE.md
+!groups/pm-autorag/schedule.json
+!groups/marketer/
+groups/marketer/**
+!groups/marketer/CLAUDE.md
+!groups/marketer/schedule.json
+!groups/marketer/config/
+!groups/marketer/config/platforms.json
+!groups/marketer/docs/
+!groups/marketer/docs/sns-research-procedure.md
+!groups/marketer/templates/
+!groups/marketer/templates/research-report.md
+!groups/marketer/scripts/
+!groups/marketer/scripts/sns-research.sh
 
 # Secrets
 *.keys.json
@@ -31,5 +47,8 @@ groups/global/*
 
 # Skills system (local per-installation state)
 .nanoclaw/
+!groups/pm-autorag/.nanoclaw/
+groups/pm-autorag/.nanoclaw/*
+!groups/pm-autorag/.nanoclaw/subagents.json
 
 agents-sdk-docs

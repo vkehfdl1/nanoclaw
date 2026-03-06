@@ -26,10 +26,23 @@ if [ -z "$REMOTE" ]; then
 fi
 
 echo "Fetching from $REMOTE..."
-if ! git fetch "$REMOTE" main 2>&1; then
+REMOTE_BRANCH="$(git ls-remote --symref "$REMOTE" HEAD 2>/dev/null | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+if [ -z "$REMOTE_BRANCH" ]; then
+  if git ls-remote --exit-code --heads "$REMOTE" main >/dev/null 2>&1; then
+    REMOTE_BRANCH="main"
+  elif git ls-remote --exit-code --heads "$REMOTE" master >/dev/null 2>&1; then
+    REMOTE_BRANCH="master"
+  else
+    REMOTE_BRANCH="main"
+  fi
+fi
+REMOTE_REF="$REMOTE/$REMOTE_BRANCH"
+
+echo "Fetching from $REMOTE ($REMOTE_BRANCH)..."
+if ! git fetch "$REMOTE" "$REMOTE_BRANCH" 2>&1; then
   echo "<<< STATUS"
   echo "STATUS=error"
-  echo "ERROR=Failed to fetch from $REMOTE"
+  echo "ERROR=Failed to fetch $REMOTE_BRANCH from $REMOTE"
   echo "STATUS >>>"
   exit 1
 fi
@@ -61,12 +74,12 @@ CANDIDATES=$(node -e "
 # git archive errors if a path doesn't exist, so we check first.
 PATHS=""
 for candidate in $CANDIDATES; do
-  if [ -n "$(git ls-tree --name-only "$REMOTE/main" "$candidate" 2>/dev/null)" ]; then
+  if [ -n "$(git ls-tree --name-only "$REMOTE_REF" "$candidate" 2>/dev/null)" ]; then
     PATHS="$PATHS $candidate"
   fi
 done
 
-git archive "$REMOTE/main" -- $PATHS | tar -x -C "$TEMP_DIR"
+git archive "$REMOTE_REF" -- $PATHS | tar -x -C "$TEMP_DIR"
 
 # Get new version from extracted package.json
 NEW_VERSION="unknown"
@@ -78,6 +91,7 @@ echo ""
 echo "<<< STATUS"
 echo "TEMP_DIR=$TEMP_DIR"
 echo "REMOTE=$REMOTE"
+echo "REMOTE_BRANCH=$REMOTE_BRANCH"
 echo "CURRENT_VERSION=$CURRENT_VERSION"
 echo "NEW_VERSION=$NEW_VERSION"
 echo "STATUS=success"

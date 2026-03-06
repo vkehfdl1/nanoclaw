@@ -15,6 +15,22 @@ function resolutionKey(skills: string[]): string {
   return [...skills].sort().join('+');
 }
 
+function resolveGitDir(projectRoot: string): string | null {
+  try {
+    let gitDir = execSync('git rev-parse --git-dir', {
+      encoding: 'utf-8',
+      cwd: projectRoot,
+      stdio: 'pipe',
+    }).trim();
+    if (!path.isAbsolute(gitDir)) {
+      gitDir = path.join(projectRoot, gitDir);
+    }
+    return gitDir;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Find the resolution directory for a given skill combination.
  * Returns absolute path if it exists, null otherwise.
@@ -65,16 +81,8 @@ export function loadResolutions(
   if (pairs.length === 0) return false;
 
   // Get the git directory
-  let gitDir: string;
-  try {
-    gitDir = execSync('git rev-parse --git-dir', {
-      encoding: 'utf-8',
-      cwd: projectRoot,
-    }).trim();
-    if (!path.isAbsolute(gitDir)) {
-      gitDir = path.join(projectRoot, gitDir);
-    }
-  } catch {
+  const gitDir = resolveGitDir(projectRoot);
+  if (!gitDir) {
     return false;
   }
 
@@ -154,19 +162,8 @@ export function saveResolution(
   const resDir = path.join(projectRoot, RESOLUTIONS_DIR, key);
 
   // Get the git rr-cache directory to find actual rerere hashes
-  let rrCacheDir: string | null = null;
-  try {
-    let gitDir = execSync('git rev-parse --git-dir', {
-      encoding: 'utf-8',
-      cwd: projectRoot,
-    }).trim();
-    if (!path.isAbsolute(gitDir)) {
-      gitDir = path.join(projectRoot, gitDir);
-    }
-    rrCacheDir = path.join(gitDir, 'rr-cache');
-  } catch {
-    // Not a git repo — skip hash capture
-  }
+  const gitDir = resolveGitDir(projectRoot);
+  const rrCacheDir = gitDir ? path.join(gitDir, 'rr-cache') : null;
 
   // Write preimage/resolution pairs
   for (const file of files) {

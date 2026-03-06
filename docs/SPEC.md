@@ -132,7 +132,6 @@ nanoclaw/
 │       ├── setup/SKILL.md              # /setup - First-time installation
 │       ├── customize/SKILL.md          # /customize - Add capabilities
 │       ├── debug/SKILL.md              # /debug - Container debugging
-│       ├── add-telegram/SKILL.md       # /add-telegram - Telegram channel
 │       ├── add-gmail/SKILL.md          # /add-gmail - Gmail integration
 │       ├── add-voice-transcription/    # /add-voice-transcription - Whisper
 │       ├── x-integration/SKILL.md      # /x-integration - X/Twitter

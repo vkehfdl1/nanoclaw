@@ -1,13 +1,13 @@
 ---
 name: add-gmail
-description: Add Gmail integration to NanoClaw. Can be configured as a tool (agent reads/sends emails when triggered from WhatsApp) or as a full channel (emails can trigger the agent, schedule tasks, and receive replies). Guides through GCP OAuth setup and implements the integration.
+description: Add Gmail integration to NanoClaw. Can be configured as a tool (agent reads/sends emails when triggered from Slack) or as a full channel (emails can trigger the agent, schedule tasks, and receive replies). Guides through GCP OAuth setup and implements the integration.
 ---
 
 # Add Gmail Integration
 
 This skill adds Gmail capabilities to NanoClaw. It can be configured in two modes:
 
-1. **Tool Mode** - Agent can read/send emails, but only when triggered from WhatsApp
+1. **Tool Mode** - Agent can read/send emails, but only when triggered from Slack
 2. **Channel Mode** - Emails can trigger the agent, schedule tasks, and receive email replies
 
 ## Initial Questions
@@ -15,7 +15,7 @@ This skill adds Gmail capabilities to NanoClaw. It can be configured in two mode
 Use `AskUserQuestion` to determine the configuration:
 
 AskUserQuestion: How do you want to use Gmail with NanoClaw?
-- **Tool Mode** - Agent can read/send emails when triggered from WhatsApp (simpler setup)
+- **Tool Mode** - Agent can read/send emails when triggered from Slack (simpler setup)
 - **Channel Mode** - Emails can trigger the agent, schedule tasks, and receive email replies (requires polling)
 
 Store their choice and proceed to the appropriate section.
@@ -251,7 +251,7 @@ sleep 2 && launchctl list | grep nanoclaw  # macOS
 
 Tell the user:
 
-> Gmail integration is set up! Test it by sending this message in your WhatsApp main channel:
+> Gmail integration is set up! Test it by sending this message in your Slack main channel:
 >
 > `@Andy check my recent emails`
 >
@@ -289,7 +289,7 @@ Store their choices for implementation.
 
 ### Step 1: Complete Tool Mode First
 
-Complete all Tool Mode steps above before continuing. Verify Gmail tools work by having the user test `@Andy check my recent emails`.
+Complete all Tool Mode steps above before continuing. Verify Gmail tools work by having the user test `@Andy check my recent emails` in the Slack main channel.
 
 ### Step 2: Add Email Polling Configuration
 

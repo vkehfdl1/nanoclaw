@@ -58,19 +58,20 @@ Compared to the upstream NanoClaw baseline, this repository currently includes:
 
 **AI-native.** No installation wizard; Claude Code guides setup. No monitoring dashboard; ask Claude what's happening. No debugging tools; describe the problem, Claude fixes it.
 
-**Skills over features.** Contributors shouldn't add features (e.g. support for Telegram) to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) like `/add-telegram` that transform your fork. You end up with clean code that does exactly what you need.
+**Skills over features.** Contributors shouldn't add features directly to the codebase. Instead, they contribute [claude code skills](https://code.claude.com/docs/en/skills) that transform your fork. You end up with clean code that does exactly what you need.
 
 **Best harness, best model.** This runs on Claude Agent SDK, which means you're running Claude Code directly. The harness matters. A bad harness makes even smart models seem dumb, a good harness gives them superpowers. Claude Code is (IMO) the best harness available.
 
 ## What It Supports
 
-- **WhatsApp I/O** - Message Claude from your phone
+- **Slack I/O (primary)** - Message Claude in Slack channels and DMs
 - **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted
 - **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
+- **Slack I/O only** - Slack is the only chat transport in this fork
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -117,9 +118,9 @@ Then run `/update`. Claude Code fetches upstream, previews changes, merges with 
 
 **Don't add features. Add skills.**
 
-If you want to add Telegram support, don't create a PR that adds Telegram alongside WhatsApp. Instead, contribute a skill file (`.claude/skills/add-telegram/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation to use Telegram.
+If you want to add a new channel or integration, don't create a PR that bloats the default setup. Instead, contribute a skill file (`.claude/skills/<skill-name>/SKILL.md`) that teaches Claude Code how to transform a NanoClaw installation.
 
-Users then run `/add-telegram` on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
+Users then run that skill on their fork and get clean code that does exactly what they need, not a bloated system trying to support every use case.
 
 ### RFS (Request for Skills)
 
@@ -144,14 +145,14 @@ Skills we'd like to see:
 ## Architecture
 
 ```
-WhatsApp (baileys) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
+Slack (Socket Mode) --> SQLite --> Polling loop --> Container (Claude Agent SDK) --> Response
 ```
 
 Single Node.js process. Agents execute in isolated Linux containers with mounted directories. Per-group message queue with concurrency control. IPC via filesystem.
 
 Key files:
 - `src/index.ts` - Orchestrator: state, message loop, agent invocation
-- `src/channels/whatsapp.ts` - WhatsApp connection, auth, send/receive
+- `src/channels/slack.ts` - Primary Slack connection, mentions, send/receive
 - `src/ipc.ts` - IPC watcher and task processing
 - `src/router.ts` - Message formatting and outbound routing
 - `src/group-queue.ts` - Per-group queue with global concurrency limit
@@ -162,9 +163,9 @@ Key files:
 
 ## FAQ
 
-**Why WhatsApp and not Telegram/Signal/etc?**
+**Why is Slack the default channel?**
 
-Because I use WhatsApp. Fork it and run a skill to change it. That's the whole point.
+Multi-agent coordination in this fork is centered on Slack channels and @mentions. Slack configuration is required.
 
 **Why Docker?**
 

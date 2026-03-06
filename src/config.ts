@@ -11,6 +11,11 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'SLACK_BOT_TOKEN',
   'SLACK_APP_TOKEN',
+  'NANOCLAW_REPOS_DIR',
+  'NANOCLAW_SECONDBRAIN_DIR',
+  'GITHUB_WEBHOOK_HOST',
+  'GITHUB_WEBHOOK_PORT',
+  'GITHUB_WEBHOOK_PATH',
 ]);
 
 export const ASSISTANT_NAME =
@@ -27,6 +32,16 @@ export const SCHEDULER_POLL_INTERVAL = 60000;
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
+const REPOS_BASE_DIR =
+  process.env.NANOCLAW_REPOS_DIR ||
+  envConfig.NANOCLAW_REPOS_DIR ||
+  '~/Projects';
+
+function expandHomePath(value: string): string {
+  if (value === '~') return HOME_DIR;
+  if (value.startsWith('~/')) return path.join(HOME_DIR, value.slice(2));
+  return value;
+}
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
 export const MOUNT_ALLOWLIST_PATH = path.join(
@@ -38,6 +53,14 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const HOST_REPOS_DIR = path.resolve(expandHomePath(REPOS_BASE_DIR));
+export const SECONDBRAIN_DIR = path.resolve(
+  expandHomePath(
+    process.env.NANOCLAW_SECONDBRAIN_DIR ||
+      envConfig.NANOCLAW_SECONDBRAIN_DIR ||
+      '~/Projects/SecondBrain',
+  ),
+);
 export const MAIN_GROUP_FOLDER = 'main';
 
 export const CONTAINER_IMAGE =
@@ -59,16 +82,20 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
-  'i',
-);
-
 // Timezone for scheduled tasks and container runtime local time.
 // Defaults to Asia/Seoul; can still be overridden via TZ.
 export const TIMEZONE = process.env.TZ || 'Asia/Seoul';
+export const GITHUB_WEBHOOK_HOST =
+  process.env.GITHUB_WEBHOOK_HOST ||
+  envConfig.GITHUB_WEBHOOK_HOST ||
+  '127.0.0.1';
+export const GITHUB_WEBHOOK_PORT = parseInt(
+  process.env.GITHUB_WEBHOOK_PORT ||
+    envConfig.GITHUB_WEBHOOK_PORT ||
+    '8787',
+  10,
+);
+export const GITHUB_WEBHOOK_PATH =
+  process.env.GITHUB_WEBHOOK_PATH ||
+  envConfig.GITHUB_WEBHOOK_PATH ||
+  '/webhooks/github';

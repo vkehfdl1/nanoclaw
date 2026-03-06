@@ -4,15 +4,22 @@ import fs from 'fs';
 
 import {
   ASSISTANT_NAME,
-  IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
-import { ContainerOutput, runContainerAgent, writeTasksSnapshot } from './container-runner.js';
 import {
+  ContainerOutput,
+  TaskSnippetOutput,
+  runContainerAgent,
+  runTaskSnippet,
+  writeTasksSnapshot,
+} from './container-runner.js';
+import {
+  claimDueTasks,
+  getAgentsByChannel,
   getAllTasks,
-  getDueTasks,
+  getSession,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -25,16 +32,128 @@ import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: GroupQueue;
-  onProcess: (groupJid: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  onProcess: (groupKey: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
+  runAgent?: typeof runContainerAgent;
+  runSnippet?: typeof runTaskSnippet;
+}
+
+interface SnippetFixPayload {
+  code_snippet: string;
+  snippet_language?: 'javascript' | 'bash' | null;
+}
+
+function computeNextRun(task: ScheduledTask): string | null {
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    return interval.next().toISOString();
+  }
+  if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    return new Date(Date.now() + ms).toISOString();
+  }
+  // 'once' tasks have no next run
+  return null;
+}
+
+function formatSnippetPayload(payload: unknown): string {
+  if (typeof payload === 'string') return payload;
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
+}
+
+function attachSnippetPayload(prompt: string, payload: unknown): string {
+  return `${prompt}\n\n[SNIPPET_GATE_PAYLOAD]\n${formatSnippetPayload(payload)}\n[/SNIPPET_GATE_PAYLOAD]`;
+}
+
+function parseSnippetFixPayload(text: string): SnippetFixPayload | null {
+  const trimmed = text.trim();
+  const parseCandidate = (candidate: string): SnippetFixPayload | null => {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<SnippetFixPayload>;
+      if (!parsed || typeof parsed !== 'object') return null;
+      if (typeof parsed.code_snippet !== 'string' || !parsed.code_snippet.trim()) {
+        return null;
+      }
+      const lang = parsed.snippet_language;
+      if (lang !== undefined && lang !== null && lang !== 'javascript' && lang !== 'bash') {
+        return null;
+      }
+      return {
+        code_snippet: parsed.code_snippet,
+        snippet_language: lang ?? undefined,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const exact = parseCandidate(trimmed);
+  if (exact) return exact;
+
+  const fenced = trimmed.match(/```json\s*([\s\S]*?)```/i);
+  if (fenced) {
+    const parsed = parseCandidate(fenced[1].trim());
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+function buildSnippetAutoFixPrompt(
+  task: ScheduledTask,
+  snippetError: TaskSnippetOutput,
+): string {
+  const snippet = task.code_snippet || '';
+  const traceback = snippetError.traceback || '(none)';
+  const logFile = snippetError.logFile || '(unknown)';
+  const error = snippetError.error || 'Snippet execution failed';
+
+  const lang = task.snippet_language || 'javascript';
+  return [
+    'You are fixing a scheduled task code snippet.',
+    'Return ONLY JSON with this exact schema and no extra text:',
+    `{"snippet_auto_fix_json":true,"code_snippet":"<${lang} snippet body>","snippet_language":"${lang}"}`,
+    '',
+    'Rules:',
+    lang === 'javascript'
+      ? '- The snippet runs as an async function body: `return (async () => { <your code> })()`'
+      : '- The snippet runs as a bash script. Print "false" to stdout to skip.',
+    lang === 'javascript'
+      ? '- Return exactly `false` to skip silently. Any other return value becomes [SNIPPET_GATE_PAYLOAD].'
+      : '- Print "false" to skip silently. Any other stdout becomes [SNIPPET_GATE_PAYLOAD].',
+    '- `context` is available with task_id, group_folder, chat_jid, schedule_type, schedule_value, run_started_at.',
+    lang === 'javascript'
+      ? '- You can use `require()` for Node.js built-ins and `child_process.execSync` for CLI tools.'
+      : '- Context JSON is at $NANOCLAW_CONTEXT_FILE. GITHUB_TOKEN and other env vars are available.',
+    '',
+    `Task ID: ${task.id}`,
+    `Task Prompt: ${task.prompt}`,
+    `Schedule: ${task.schedule_type} ${task.schedule_value}`,
+    `Snippet language: ${lang}`,
+    '',
+    `Current broken snippet:`,
+    `\`\`\`${lang === 'bash' ? 'bash' : 'javascript'}`,
+    snippet,
+    '```',
+    '',
+    `Error: ${error}`,
+    `Traceback: ${traceback}`,
+    `Log file: ${logFile}`,
+  ].join('\n');
 }
 
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
 ): Promise<void> {
+  const runAgent = deps.runAgent ?? runContainerAgent;
+  const runSnippet = deps.runSnippet ?? runTaskSnippet;
   const startTime = Date.now();
   let groupDir: string;
   try {
@@ -65,13 +184,26 @@ async function runTask(
   );
 
   const groups = deps.registeredGroups();
-  const group = Object.values(groups).find(
+  const groupsInChat = getAgentsByChannel(task.chat_jid);
+  const groupFromChat = groupsInChat.find(
     (g) => g.folder === task.group_folder,
   );
+  // Fallback to in-memory state in case chat_jid was changed but folder remains valid.
+  const groupFromMemory = Object.values(groups).find(
+    (g) => g.folder === task.group_folder,
+  );
+  const group = groupFromChat ?? groupFromMemory;
 
   if (!group) {
+    updateTask(task.id, { status: 'paused' });
     logger.error(
-      { taskId: task.id, groupFolder: task.group_folder },
+      {
+        taskId: task.id,
+        groupFolder: task.group_folder,
+        chatJid: task.chat_jid,
+        knownFoldersInChat: groupsInChat.map((g) => g.folder),
+        knownFoldersInMemory: Object.values(groups).map((g) => g.folder),
+      },
       'Group not found for task',
     );
     logTaskRun({
@@ -85,11 +217,158 @@ async function runTask(
     return;
   }
 
+  let currentTask = task;
+  const finalizeRun = (runResult: string | null, runError: string | null): void => {
+    const durationMs = Date.now() - startTime;
+    logTaskRun({
+      task_id: currentTask.id,
+      run_at: new Date().toISOString(),
+      duration_ms: durationMs,
+      status: runError ? 'error' : 'success',
+      result: runResult,
+      error: runError,
+    });
+    const nextRun = computeNextRun(currentTask);
+    const resultSummary = runError
+      ? `Error: ${runError}`
+      : runResult
+        ? runResult.slice(0, 200)
+        : 'Completed';
+    updateTaskAfterRun(currentTask.id, nextRun, resultSummary);
+  };
+
+  let promptToRun = currentTask.prompt;
+
+  const trimmedSnippet = currentTask.code_snippet?.trim();
+  if (trimmedSnippet) {
+    logger.info(
+      { taskId: currentTask.id, group: currentTask.group_folder },
+      'Evaluating scheduled task code snippet gate',
+    );
+
+    const evaluateSnippet = async (): Promise<TaskSnippetOutput> =>
+      runSnippet(group, {
+        taskId: currentTask.id,
+        groupFolder: currentTask.group_folder,
+        chatJid: currentTask.chat_jid,
+        scheduleType: currentTask.schedule_type,
+        scheduleValue: currentTask.schedule_value,
+        snippet: currentTask.code_snippet || '',
+        snippetLanguage: (currentTask.snippet_language as 'javascript' | 'bash') || 'javascript',
+        isMain: currentTask.group_folder === MAIN_GROUP_FOLDER,
+      });
+
+    let snippetOutput = await evaluateSnippet();
+    if (snippetOutput.status === 'error') {
+      logger.error(
+        {
+          taskId: currentTask.id,
+          error: snippetOutput.error,
+          logFile: snippetOutput.logFile,
+        },
+        'Scheduled task snippet execution failed; invoking auto-fix agent',
+      );
+
+      let fixResult: string | null = null;
+      let fixError: string | null = null;
+      try {
+        const fixOutput = await runAgent(
+          group,
+          {
+            prompt: buildSnippetAutoFixPrompt(currentTask, snippetOutput),
+            groupFolder: currentTask.group_folder,
+            chatJid: currentTask.chat_jid,
+            isMain: currentTask.group_folder === MAIN_GROUP_FOLDER,
+            isScheduledTask: true,
+            assistantName: ASSISTANT_NAME,
+          },
+          (proc, containerName) =>
+            deps.onProcess(
+              currentTask.group_folder,
+              proc,
+              containerName,
+              currentTask.group_folder,
+            ),
+          async (streamedOutput: ContainerOutput) => {
+            if (streamedOutput.result) {
+              fixResult = streamedOutput.result;
+            }
+            if (streamedOutput.status === 'success') {
+              deps.queue.notifyIdle(currentTask.group_folder);
+            }
+            if (streamedOutput.status === 'error') {
+              fixError = streamedOutput.error || 'Unknown error';
+            }
+          },
+        );
+        if (fixOutput.status === 'error') {
+          fixError = fixOutput.error || 'Unknown error';
+        }
+      } catch (err) {
+        fixError = err instanceof Error ? err.message : String(err);
+      }
+
+      if (fixError || !fixResult) {
+        const error = fixError || 'Auto-fix agent produced no snippet patch result';
+        logger.error(
+          { taskId: currentTask.id, error },
+          'Scheduled task snippet auto-fix failed',
+        );
+        finalizeRun(
+          null,
+          `Snippet execution failed and auto-fix failed: ${error}`,
+        );
+        return;
+      }
+
+      const patch = parseSnippetFixPayload(fixResult);
+      if (!patch) {
+        finalizeRun(
+          null,
+          'Snippet execution failed and auto-fix output was not valid JSON',
+        );
+        return;
+      }
+
+      updateTask(currentTask.id, {
+        code_snippet: patch.code_snippet,
+        snippet_language: patch.snippet_language || (currentTask.snippet_language as any) || 'javascript',
+      });
+      const refreshed = getTaskById(currentTask.id);
+      if (refreshed) currentTask = refreshed;
+      logger.info(
+        { taskId: currentTask.id },
+        'Scheduled task snippet updated by auto-fix agent; re-running snippet gate',
+      );
+      snippetOutput = await evaluateSnippet();
+      if (snippetOutput.status === 'error') {
+        finalizeRun(
+          null,
+          `Snippet execution failed after auto-fix: ${snippetOutput.error || 'Unknown error'}${snippetOutput.logFile ? ` (log: ${snippetOutput.logFile})` : ''}`,
+        );
+        return;
+      }
+    }
+
+    if (snippetOutput.status === 'skip') {
+      logger.info(
+        { taskId: currentTask.id, group: currentTask.group_folder },
+        'Snippet gate returned false; skipping scheduled task run silently',
+      );
+      finalizeRun('Skipped by code snippet (returned false)', null);
+      return;
+    }
+
+    if (snippetOutput.status === 'pass') {
+      promptToRun = attachSnippetPayload(currentTask.prompt, snippetOutput.payload);
+    }
+  }
+
   // Update tasks snapshot for container to read (filtered by group)
-  const isMain = task.group_folder === MAIN_GROUP_FOLDER;
+  const isMain = currentTask.group_folder === MAIN_GROUP_FOLDER;
   const tasks = getAllTasks();
   writeTasksSnapshot(
-    task.group_folder,
+    currentTask.group_folder,
     isMain,
     tasks.map((t) => ({
       id: t.id,
@@ -105,10 +384,11 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
-  const sessions = deps.getSessions();
+  // For group context mode, use the group's scheduled task session
   const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+    currentTask.context_mode === 'group'
+      ? getSession(currentTask.group_folder, currentTask.chat_jid, '__scheduled__')
+      : undefined;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
@@ -119,33 +399,37 @@ async function runTask(
   const scheduleClose = () => {
     if (closeTimer) return; // already scheduled
     closeTimer = setTimeout(() => {
-      logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
+      logger.debug({ taskId: currentTask.id }, 'Closing task container after result');
+      deps.queue.closeStdin(currentTask.group_folder);
     }, TASK_CLOSE_DELAY_MS);
   };
 
   try {
-    const output = await runContainerAgent(
+    const output = await runAgent(
       group,
       {
-        prompt: task.prompt,
+        prompt: promptToRun,
         sessionId,
-        groupFolder: task.group_folder,
-        chatJid: task.chat_jid,
+        groupFolder: currentTask.group_folder,
+        chatJid: currentTask.chat_jid,
         isMain,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) => deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+      (proc, containerName) =>
+        deps.onProcess(
+          currentTask.group_folder,
+          proc,
+          containerName,
+          currentTask.group_folder,
+        ),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
+          deps.queue.notifyIdle(currentTask.group_folder);
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
@@ -158,49 +442,21 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Messages are sent via MCP tool (IPC), result text is just logged
+      // Final output is retained for task logs/state only.
       result = output.result;
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
+      { taskId: currentTask.id, durationMs: Date.now() - startTime },
       'Task completed',
     );
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
     error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
+    logger.error({ taskId: currentTask.id, error }, 'Task failed');
   }
 
-  const durationMs = Date.now() - startTime;
-
-  logTaskRun({
-    task_id: task.id,
-    run_at: new Date().toISOString(),
-    duration_ms: durationMs,
-    status: error ? 'error' : 'success',
-    result,
-    error,
-  });
-
-  let nextRun: string | null = null;
-  if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    nextRun = interval.next().toISOString();
-  } else if (task.schedule_type === 'interval') {
-    const ms = parseInt(task.schedule_value, 10);
-    nextRun = new Date(Date.now() + ms).toISOString();
-  }
-  // 'once' tasks have no next run
-
-  const resultSummary = error
-    ? `Error: ${error}`
-    : result
-      ? result.slice(0, 200)
-      : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  finalizeRun(result, error);
 }
 
 let schedulerRunning = false;
@@ -215,20 +471,19 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
   const loop = async () => {
     try {
-      const dueTasks = getDueTasks();
-      if (dueTasks.length > 0) {
-        logger.info({ count: dueTasks.length }, 'Found due tasks');
+      const claimedTasks = claimDueTasks();
+      if (claimedTasks.length > 0) {
+        logger.info({ count: claimedTasks.length }, 'Claimed due tasks');
       }
 
-      for (const task of dueTasks) {
-        // Re-check task status in case it was paused/cancelled
+      for (const task of claimedTasks) {
         const currentTask = getTaskById(task.id);
-        if (!currentTask || currentTask.status !== 'active') {
+        if (!currentTask || currentTask.status !== 'running') {
           continue;
         }
 
         deps.queue.enqueueTask(
-          currentTask.chat_jid,
+          currentTask.group_folder,
           currentTask.id,
           () => runTask(currentTask, deps),
         );
@@ -246,4 +501,12 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 /** @internal - for tests only. */
 export function _resetSchedulerLoopForTests(): void {
   schedulerRunning = false;
+}
+
+/** @internal - for tests only. */
+export async function _runTaskForTests(
+  task: ScheduledTask,
+  deps: SchedulerDependencies,
+): Promise<void> {
+  await runTask(task, deps);
 }

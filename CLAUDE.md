@@ -4,14 +4,15 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 ## Quick Context
 
-Single Node.js process that connects to WhatsApp, routes messages to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+Single Node.js process that connects to Slack as the primary channel (with optional legacy WhatsApp fallback), routes messages to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | Orchestrator: state, message loop, agent invocation |
-| `src/channels/whatsapp.ts` | WhatsApp connection, auth, send/receive |
+| `src/channels/slack.ts` | Primary Slack connection, mentions, send/receive |
+| `src/channels/whatsapp.ts` | Optional legacy WhatsApp fallback channel |
 | `src/ipc.ts` | IPC watcher and task processing |
 | `src/router.ts` | Message formatting and outbound routing |
 | `src/config.ts` | Trigger pattern, paths, intervals |
@@ -56,3 +57,26 @@ systemctl --user restart nanoclaw
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+## Scheduled Tasks
+
+`scheduled_tasks` now support two execution modes:
+
+1. Prompt-only (legacy): run agent immediately with `prompt`.
+2. Snippet-gated: run `code_snippet` first; only invoke agent when the snippet allows it.
+
+Snippet-gated behavior:
+
+- `snippet_language` is `'javascript'` (default) or `'bash'`.
+- JavaScript snippets run as async function body in Node.js — `return false` to skip silently. `require()` and `child_process.execSync` are available.
+- Bash snippets run as shell scripts — print `false` to skip silently. `GITHUB_TOKEN` and other env vars are available.
+- Any non-`false` return/output is injected into the agent prompt as `[SNIPPET_GATE_PAYLOAD]`.
+- `context` object (JS) or `$NANOCLAW_CONTEXT_FILE` (Bash) provides task metadata: `task_id`, `group_folder`, `chat_jid`, `schedule_type`, `schedule_value`, `run_started_at`.
+- Snippets time out after 45 seconds. On error, host writes a log and immediately runs an auto-fix agent pass.
+- Task editing is still handled by cancel + recreate.
+
+Declarative bootstrap:
+
+- Agent groups can declare recurring tasks in `groups/{name}/schedule.json`.
+- Tasks are registered idempotently at startup (DB ID: `bootstrap-{configId}`).
+- Set `enabled: false` to disable without removing. See `src/agent-schedule-bootstrap.ts` for schema.

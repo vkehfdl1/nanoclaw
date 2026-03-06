@@ -141,7 +141,7 @@ npm run build
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw
 ```
 
-Send a message via WhatsApp and verify the agent responds.
+Send a message in a registered Slack channel and verify the agent responds.
 
 ## Troubleshooting
 

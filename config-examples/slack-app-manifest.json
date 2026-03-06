@@ -1,0 +1,55 @@
+{
+  "_comment": "Slack App Manifest for NanoClaw PM Agents. Paste this into api.slack.com/apps when creating a new app (or updating an existing one). All PM agents share the same Slack app — each one is assigned to a different channel via the register-pm-agent script.",
+  "display_information": {
+    "name": "NanoClaw",
+    "description": "AI project manager — responds to @mentions, manages GitHub issues/PRs, and summarizes conversations.",
+    "background_color": "#1a1a2e"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "NanoClaw PM",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "reactions:read",
+        "reactions:write",
+        "team:read",
+        "users:read",
+        "users:read.email"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

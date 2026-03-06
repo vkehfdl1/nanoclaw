@@ -7,7 +7,21 @@ import { ASSISTANT_NAME, GROUPS_DIR } from '../config.js';
 import { updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import { formatOutbound } from '../router.js';
-import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
+import {
+  Channel,
+  OnInboundMessage,
+  OnChatMetadata,
+  OutboundMessageOptions,
+  RegisteredGroup,
+} from '../types.js';
+
+/**
+ * Parse the agent name from a bot message's `*AgentName:*` prefix.
+ */
+function parseAgentLabel(content: string): string | undefined {
+  const match = content.match(/^\*([^:*]+):\*/);
+  return match ? match[1] : undefined;
+}
 
 export interface SlackChannelOpts {
   onMessage: OnInboundMessage;
@@ -37,10 +51,33 @@ export class SlackChannel implements Channel {
 
   private getAssistantLabel(jid: string): string {
     const group = this.opts.registeredGroups()[jid];
+    if (group?.name) return group.name;
     const trigger = group?.trigger?.trim();
     if (!trigger) return ASSISTANT_NAME;
     const label = trigger.startsWith('@') ? trigger.slice(1).trim() : trigger;
     return label || ASSISTANT_NAME;
+  }
+
+  private toIsoTimestamp(slackTs: string | undefined): string {
+    if (!slackTs) return new Date().toISOString();
+    const wholeSeconds = Number(slackTs.split('.')[0]);
+    if (!Number.isFinite(wholeSeconds)) return new Date().toISOString();
+    return new Date(wholeSeconds * 1000).toISOString();
+  }
+
+  private async resolveSenderName(client: App['client'], userId: string): Promise<string> {
+    if (!userId || userId === 'unknown') return 'unknown';
+    try {
+      const userInfo = await client.users.info({ user: userId });
+      return (
+        userInfo.user?.profile?.display_name ||
+        userInfo.user?.real_name ||
+        userInfo.user?.name ||
+        userId
+      );
+    } catch {
+      return userId;
+    }
   }
 
   async connect(): Promise<void> {
@@ -56,10 +93,11 @@ export class SlackChannel implements Channel {
 
     // Listen for all messages in channels the bot is in
     this.app.message(async ({ message, client }) => {
-      // Skip bot messages and non-user subtypes (edits, deletes, etc.)
-      // Allow file_share subtype through for file uploads
-      if ('bot_id' in message && message.bot_id) return;
-      if (message.subtype && message.subtype !== 'file_share') return;
+      // Mark bot messages but let them through (for cross-agent alias mention routing)
+      const isOwnBot = 'bot_id' in message && !!message.bot_id;
+
+      // Skip non-user subtypes (edits, deletes, etc.) — allow file_share and bot_message
+      if (message.subtype && message.subtype !== 'file_share' && message.subtype !== 'bot_message') return;
 
       const hasText = 'text' in message && message.text;
       const hasFiles = 'files' in message && Array.isArray(message.files) && message.files.length > 0;
@@ -67,9 +105,7 @@ export class SlackChannel implements Channel {
 
       const channelId = message.channel;
       const chatJid = `slack:${channelId}`;
-      const timestamp = new Date(
-        Number(message.ts.split('.')[0]) * 1000,
-      ).toISOString();
+      const timestamp = this.toIsoTimestamp(message.ts);
 
       // Report chat metadata for channel discovery
       const isGroup = channelId.startsWith('C') || channelId.startsWith('G');
@@ -79,24 +115,17 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[chatJid]) return;
 
+      const group = groups[chatJid];
+
       // Resolve sender display name
       const userId = ('user' in message ? message.user : undefined) || 'unknown';
-      let senderName = userId;
-      try {
-        const userInfo = await client.users.info({ user: userId });
-        senderName =
-          userInfo.user?.profile?.display_name ||
-          userInfo.user?.real_name ||
-          userInfo.user?.name ||
-          senderName;
-      } catch {
-        // Fall back to user ID
-      }
+      const senderName = isOwnBot
+        ? (parseAgentLabel(('text' in message ? message.text : '') || '') ?? 'bot')
+        : await this.resolveSenderName(client, userId);
 
-      // Download any attached files into the group workspace
+      // Download any attached files into the group workspace (skip for own bot messages)
       const filePaths: string[] = [];
-      if (hasFiles) {
-        const group = groups[chatJid];
+      if (hasFiles && !isOwnBot) {
         const downloadsDir = path.join(GROUPS_DIR, group.folder, 'downloads');
         fs.mkdirSync(downloadsDir, { recursive: true });
 
@@ -137,7 +166,18 @@ export class SlackChannel implements Channel {
       }
       if (!content) return;
 
-      const fromMe = userId === this.botUserId;
+      const fromMe = userId === this.botUserId || isOwnBot;
+
+      // Parse agent source from bot message *AgentName:* prefix
+      const agentSource = isOwnBot ? parseAgentLabel(content) : undefined;
+
+      // Determine which thread_ts to track for reply-in-thread:
+      //   - If the message is already in a thread (thread_ts set), reply there
+      //   - Otherwise use message.ts to start a new thread from this message
+      const threadTs =
+        'thread_ts' in message && typeof message.thread_ts === 'string'
+          ? message.thread_ts
+          : message.ts;
 
       this.opts.onMessage(chatJid, {
         id: message.ts,
@@ -147,45 +187,9 @@ export class SlackChannel implements Channel {
         content,
         timestamp,
         is_from_me: fromMe,
-        is_bot_message: fromMe,
-      });
-    });
-
-    // Also listen for app_mention events (when someone @mentions the bot)
-    this.app.event('app_mention', async ({ event, client }) => {
-      const channelId = event.channel;
-      const chatJid = `slack:${channelId}`;
-      const timestamp = new Date(
-        Number(event.ts.split('.')[0]) * 1000,
-      ).toISOString();
-
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'slack', true);
-
-      const groups = this.opts.registeredGroups();
-      if (!groups[chatJid]) return;
-
-      const userId = event.user || 'unknown';
-      let senderName: string = userId;
-      try {
-        const userInfo = await client.users.info({ user: userId });
-        senderName =
-          userInfo.user?.profile?.display_name ||
-          userInfo.user?.real_name ||
-          userInfo.user?.name ||
-          senderName;
-      } catch {
-        // Fall back to user ID
-      }
-
-      this.opts.onMessage(chatJid, {
-        id: event.ts,
-        chat_jid: chatJid,
-        sender: userId,
-        sender_name: senderName,
-        content: event.text,
-        timestamp,
-        is_from_me: false,
-        is_bot_message: false,
+        is_bot_message: isOwnBot,
+        agent_source: agentSource,
+        thread_ts: threadTs,
       });
     });
 
@@ -197,19 +201,55 @@ export class SlackChannel implements Channel {
     await this.syncChannels();
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    options?: OutboundMessageOptions,
+  ): Promise<void> {
     const channelId = jid.replace('slack:', '');
-    const assistantLabel = this.getAssistantLabel(jid);
+    const assistantLabel = options?.agentLabel || this.getAssistantLabel(jid);
     const outbound = formatOutbound(text);
     if (!outbound) return;
+
     try {
-      await this.app.client.chat.postMessage({
+      const payload: {
+        channel: string;
+        text: string;
+        mrkdwn: boolean;
+        thread_ts?: string;
+      } = {
         channel: channelId,
         text: `*${assistantLabel}:* ${outbound}`,
-        // Use mrkdwn so the bot name is bold
         mrkdwn: true,
-      });
-      logger.info({ jid, length: outbound.length }, 'Slack message sent');
+      };
+      if (options?.threadTs) {
+        payload.thread_ts = options.threadTs;
+      }
+      const response = await this.app.client.chat.postMessage(payload);
+      const sentTs = typeof response.ts === 'string' ? response.ts : undefined;
+      if (sentTs) {
+        this.opts.onMessage(jid, {
+          id: sentTs,
+          chat_jid: jid,
+          sender: this.botUserId || 'unknown',
+          sender_name: assistantLabel,
+          content: payload.text,
+          timestamp: this.toIsoTimestamp(sentTs),
+          is_from_me: true,
+          is_bot_message: true,
+          agent_source: assistantLabel,
+          thread_ts: options?.threadTs || sentTs,
+        });
+      }
+      logger.info(
+        {
+          jid,
+          length: outbound.length,
+          inThread: !!options?.threadTs,
+          threadTs: options?.threadTs,
+        },
+        'Slack message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Slack message');
     }
@@ -223,9 +263,9 @@ export class SlackChannel implements Channel {
     return jid.startsWith('slack:');
   }
 
-  async sendFile(jid: string, filePath: string, comment?: string): Promise<void> {
+  async sendFile(jid: string, filePath: string, comment?: string, agentLabel?: string): Promise<void> {
     const channelId = jid.replace('slack:', '');
-    const assistantLabel = this.getAssistantLabel(jid);
+    const assistantLabel = agentLabel || this.getAssistantLabel(jid);
     try {
       const fileContent = fs.readFileSync(filePath);
       const filename = path.basename(filePath);

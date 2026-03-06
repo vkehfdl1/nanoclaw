@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import { spawn } from 'child_process';
+import fs from 'fs';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -14,6 +16,7 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
+  SECONDBRAIN_DIR: '/tmp/nanoclaw-test-secondbrain',
   TIMEZONE: 'America/Los_Angeles',
 }));
 
@@ -36,6 +39,7 @@ vi.mock('fs', async () => {
       ...actual,
       existsSync: vi.fn(() => false),
       mkdirSync: vi.fn(),
+      cpSync: vi.fn(),
       writeFileSync: vi.fn(),
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
@@ -82,14 +86,17 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { runContainerAgent, runTaskSnippet, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import { validateAdditionalMounts } from './mount-security.js';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
   folder: 'test-group',
   trigger: '@Andy',
+  aliases: ['andy'],
   added_at: new Date().toISOString(),
+  gateway: { rules: [{ match: 'self_mention' }] },
 };
 
 const testInput = {
@@ -199,5 +206,143 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('mounts global CLAUDE context for main agents', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === '/tmp/nanoclaw-test-groups/global'
+    ));
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      {
+        ...testInput,
+        isMain: true,
+      },
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-global',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    expect(spawnArgs).toContain('/tmp/nanoclaw-test-groups/global:/workspace/global:ro');
+  });
+
+  it('adds tmpfs overlays for additional mount excludePatterns', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => {
+      const p = String(filePath);
+      return p.endsWith('/node_modules') ||
+        p.endsWith('/.venv') ||
+        p.endsWith('/.git/objects');
+    });
+
+    vi.mocked(validateAdditionalMounts).mockReturnValueOnce([
+      {
+        hostPath: '/host/repos/autorag-research',
+        containerPath: '/workspace/extra/autorag-research',
+        readonly: true,
+        excludePatterns: ['node_modules', '.venv', '.git/objects', '../bad'],
+      },
+    ]);
+
+    const groupWithMounts: RegisteredGroup = {
+      ...testGroup,
+      containerConfig: {
+        additionalMounts: [{ hostPath: '/ignored/by/mock' }],
+      },
+    };
+
+    const resultPromise = runContainerAgent(
+      groupWithMounts,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-tmpfs',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    const tmpfsPaths: string[] = [];
+    for (let i = 0; i < spawnArgs.length; i += 1) {
+      if (spawnArgs[i] === '--tmpfs') {
+        tmpfsPaths.push(spawnArgs[i + 1]);
+      }
+    }
+
+    expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/node_modules');
+    expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.venv');
+    expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.git/objects');
+    expect(tmpfsPaths.some((p) => p.includes('../bad'))).toBe(false);
+  });
+
+  it('refreshes the per-group agent runner snapshot from the latest source', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath).endsWith('/container/agent-runner/src')
+    ));
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-sync',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    expect(vi.mocked(fs.cpSync)).toHaveBeenCalledWith(
+      expect.stringMatching(/container\/agent-runner\/src$/),
+      '/tmp/nanoclaw-test-data/sessions/test-group/agent-runner-src',
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+  });
+
+  it('runs javascript task snippets with node as the container entrypoint', async () => {
+    const resultPromise = runTaskSnippet(testGroup, {
+      taskId: 'snippet-task',
+      groupFolder: 'test-group',
+      chatJid: 'test@g.us',
+      scheduleType: 'cron',
+      scheduleValue: '*/15 * * * *',
+      snippet: 'return false;',
+      snippetLanguage: 'javascript',
+      isMain: false,
+    });
+
+    fakeProc.stdout.push('{"ok":true,"should_run":false,"payload":false}\n');
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result).toEqual({ status: 'skip', payload: false });
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    expect(spawnArgs).toContain('--entrypoint');
+    expect(spawnArgs).toContain('node');
   });
 });

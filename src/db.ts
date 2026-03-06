@@ -5,9 +5,155 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
+import {
+  AgentGateway,
+  GithubEventRunRecord,
+  GithubEventRunStatus,
+  GithubNormalizedEvent,
+  GithubWebhookDeliveryRecord,
+  GithubWebhookDeliveryStatus,
+  NewMessage,
+  RegisteredGroup,
+  ScheduledTask,
+  TaskRunLog,
+} from './types.js';
 
 let db: Database.Database;
+
+const MAIN_CHANNEL_JID = 'slack:C0AH91957U0';
+const MAIN_FOLDER = 'main';
+const PM_AUTORAG_CHANNEL_JID = 'slack:C09RELR4R9N';
+const PM_AUTORAG_FOLDER = 'pm-autorag';
+const MARKETER_FOLDER = 'marketer';
+const MARKETER_CHANNEL_JID = 'slack:C0AJ9U1DB25';
+const TODOMON_CHANNEL_JID = 'slack:C0AH3SVQL4C';
+const TODOMON_FOLDER = 'todomon';
+
+function ensureDefaultRegisteredGroup(
+  jid: string,
+  group: Omit<RegisteredGroup, 'added_at'>,
+): void {
+  const existing = db
+    .prepare(
+      `SELECT added_at FROM registered_groups WHERE jid = ? AND folder = ? LIMIT 1`,
+    )
+    .get(jid, group.folder) as
+    | { added_at: string }
+    | undefined;
+
+  setRegisteredGroup(jid, {
+    ...group,
+    added_at: existing?.added_at ?? new Date().toISOString(),
+  });
+}
+
+function ensureMainRegistration(): void {
+  ensureDefaultRegisteredGroup(MAIN_CHANNEL_JID, {
+    name: '도비',
+    folder: MAIN_FOLDER,
+    trigger: '@도비',
+    aliases: ['dobby', '도비'],
+    requiresTrigger: false,
+    gateway: { rules: [{ match: 'self_mention' }] },
+    role: 'main',
+    containerConfig: {
+      model: 'claude-opus-4-6',
+    },
+  });
+}
+
+function ensurePmAutoragRegistration(): void {
+  ensureDefaultRegisteredGroup(PM_AUTORAG_CHANNEL_JID, {
+    name: '영구',
+    folder: PM_AUTORAG_FOLDER,
+    trigger: '@영구',
+    aliases: ['young-gu', '영구'],
+    requiresTrigger: false,
+    gateway: {
+      rules: [{ match: 'self_mention' }],
+    },
+    role: 'pm-agent',
+    containerConfig: {
+      model: 'claude-opus-4-6',
+      envVars: {
+        GITHUB_REPO: 'NomaDamas/AutoRAG-Research',
+        ALLOWED_REPOS: 'autorag-research',
+      },
+      additionalMounts: [
+        {
+          hostPath: '~/Projects/AutoRAG-Research',
+          containerPath: 'autorag-research',
+          readonly: true,
+          excludePatterns: [
+            'node_modules',
+            '.venv',
+            'dist',
+            '.git/objects',
+            '__pycache__',
+            '.mypy_cache',
+            '.pytest_cache',
+          ],
+        },
+      ],
+    },
+  });
+}
+
+function ensureMarketerRegistration(): void {
+  // 홍명보 (formerly Marketer): responds to all messages in its channel
+  ensureDefaultRegisteredGroup(MARKETER_CHANNEL_JID, {
+    name: '홍명보',
+    folder: MARKETER_FOLDER,
+    trigger: '@홍명보',
+    aliases: ['marketer', '홍명보', '명보'],
+    requiresTrigger: false,
+    gateway: {
+      rules: [
+        { channel: [MARKETER_CHANNEL_JID], match: 'any_message' },
+        { match: 'self_mention' },
+      ],
+    },
+    role: 'marketer',
+    containerConfig: {
+      model: 'claude-sonnet-4-6',
+      additionalMounts: [
+        {
+          hostPath: '~/.nanoclaw/auth',
+          containerPath: 'auth',
+          readonly: true,
+        },
+      ],
+    },
+  });
+
+}
+
+function ensureTodomonRegistration(): void {
+  ensureDefaultRegisteredGroup(TODOMON_CHANNEL_JID, {
+    name: '투두몬',
+    folder: TODOMON_FOLDER,
+    trigger: '@투두몬',
+    aliases: ['todomon', '투두몬'],
+    requiresTrigger: false,
+    gateway: {
+      rules: [
+        { channel: [TODOMON_CHANNEL_JID], match: 'any_message' },
+        { match: 'self_mention' },
+      ],
+    },
+    role: 'todomon',
+    containerConfig: {
+      model: 'claude-sonnet-4-6',
+    },
+  });
+}
+
+function ensureDefaultAgentRegistrations(): void {
+  ensureMainRegistration();
+  ensurePmAutoragRegistration();
+  ensureMarketerRegistration();
+  ensureTodomonRegistration();
+}
 
 function createSchema(database: Database.Database): void {
   database.exec(`
@@ -27,6 +173,8 @@ function createSchema(database: Database.Database): void {
       timestamp TEXT,
       is_from_me INTEGER,
       is_bot_message INTEGER DEFAULT 0,
+      is_cross_agent INTEGER DEFAULT 0,
+      agent_source TEXT,
       PRIMARY KEY (id, chat_jid),
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
@@ -37,6 +185,9 @@ function createSchema(database: Database.Database): void {
       group_folder TEXT NOT NULL,
       chat_jid TEXT NOT NULL,
       prompt TEXT NOT NULL,
+      code_snippet TEXT,
+      snippet_language TEXT DEFAULT 'python',
+      snippet_venv_path TEXT,
       schedule_type TEXT NOT NULL,
       schedule_value TEXT NOT NULL,
       next_run TEXT,
@@ -65,8 +216,19 @@ function createSchema(database: Database.Database): void {
       value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL
+      agent_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      thread_ts TEXT NOT NULL DEFAULT '__channel__',
+      session_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_active TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (agent_folder, chat_jid, thread_ts)
+    );
+    CREATE TABLE IF NOT EXISTS agent_cursors (
+      agent_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      last_processed_ts TEXT NOT NULL,
+      PRIMARY KEY (agent_folder, chat_jid)
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
@@ -75,7 +237,36 @@ function createSchema(database: Database.Database): void {
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
-      requires_trigger INTEGER DEFAULT 1
+      requires_trigger INTEGER DEFAULT 1,
+      role TEXT
+    );
+    CREATE TABLE IF NOT EXISTS github_webhook_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      event_name TEXT NOT NULL,
+      action TEXT,
+      repository_full_name TEXT,
+      installation_id INTEGER,
+      resource_key TEXT,
+      received_at TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error TEXT,
+      payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS github_event_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_id TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_key TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      thread_ts TEXT NOT NULL,
+      session_mode TEXT NOT NULL DEFAULT 'isolated',
+      trigger_kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      result TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
 
@@ -83,6 +274,27 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN code_snippet TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN snippet_language TEXT DEFAULT 'python'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN snippet_venv_path TEXT`,
     );
   } catch {
     /* column already exists */
@@ -101,6 +313,22 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add cross-agent messaging columns if they don't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN is_cross_agent INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN agent_source TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
     database.exec(
@@ -109,14 +337,154 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`,
     );
-    // Backfill from JID patterns
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`);
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`);
+    // Backfill from known JID patterns where possible
     database.exec(`UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`);
     database.exec(`UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`);
   } catch {
     /* columns already exist */
   }
+
+  // Add thread_ts column for Slack thread tracking (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE messages ADD COLUMN thread_ts TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add role column to registered_groups for agent role identification (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN role TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add aliases column (JSON array) for declarative alias matching
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN aliases TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add gateway column (JSON object) for declarative gateway rules
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN gateway TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Enforce one channel <-> one agent registration on existing DBs.
+  try {
+    database.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_groups_jid_unique ON registered_groups(jid)`,
+    );
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Could not enforce unique channel registration on registered_groups.jid',
+    );
+  }
+  try {
+    database.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_groups_folder_unique ON registered_groups(folder)`,
+    );
+  } catch (err) {
+    logger.warn(
+      { err },
+      'Could not enforce unique agent-folder registration on registered_groups.folder',
+    );
+  }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_registered_groups_folder ON registered_groups(folder);
+    CREATE INDEX IF NOT EXISTS idx_github_webhook_deliveries_status ON github_webhook_deliveries(status, received_at);
+    CREATE INDEX IF NOT EXISTS idx_github_event_runs_delivery ON github_event_runs(delivery_id);
+    CREATE INDEX IF NOT EXISTS idx_github_event_runs_group_status ON github_event_runs(group_folder, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_github_event_runs_resource ON github_event_runs(resource_key, created_at);
+  `);
+
+  // Migrate old single-key sessions table to thread-aware schema
+  try {
+    const sessionsSql = database
+      .prepare(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`,
+      )
+      .get() as { sql: string } | undefined;
+
+    const sql = sessionsSql?.sql ?? '';
+    const hasOldSchema = /\bgroup_folder\s+TEXT\s+PRIMARY\s+KEY\b/i.test(sql);
+
+    if (hasOldSchema) {
+      database.exec(`
+        BEGIN TRANSACTION;
+        CREATE TABLE sessions_v2 (
+          agent_folder TEXT NOT NULL,
+          chat_jid TEXT NOT NULL,
+          thread_ts TEXT NOT NULL DEFAULT '__channel__',
+          session_id TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_active TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (agent_folder, chat_jid, thread_ts)
+        );
+        DROP TABLE sessions;
+        ALTER TABLE sessions_v2 RENAME TO sessions;
+        COMMIT;
+      `);
+      logger.info('Migrated sessions table to thread-aware schema (old sessions discarded)');
+    }
+  } catch (err) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      /* no open transaction */
+    }
+    logger.error({ err }, 'Failed to migrate sessions table');
+  }
+
+  // Migrate agent cursors from router_state JSON to dedicated table
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS agent_cursors (
+        agent_folder TEXT NOT NULL,
+        chat_jid TEXT NOT NULL,
+        last_processed_ts TEXT NOT NULL,
+        PRIMARY KEY (agent_folder, chat_jid)
+      );
+    `);
+    const agentTsRow = database
+      .prepare(`SELECT value FROM router_state WHERE key = 'last_agent_timestamp'`)
+      .get() as { value: string } | undefined;
+    if (agentTsRow?.value) {
+      const agentTs = JSON.parse(agentTsRow.value) as Record<string, string>;
+      const insertCursor = database.prepare(
+        `INSERT OR REPLACE INTO agent_cursors (agent_folder, chat_jid, last_processed_ts) VALUES (?, ?, ?)`,
+      );
+      for (const [compositeKey, ts] of Object.entries(agentTs)) {
+        const parts = compositeKey.split('::');
+        if (parts.length === 2) {
+          insertCursor.run(parts[1], parts[0], ts); // folder, chatJid, timestamp
+        } else {
+          // Legacy format: key is just chatJid, folder unknown — skip
+        }
+      }
+      database.prepare(`DELETE FROM router_state WHERE key = 'last_agent_timestamp'`).run();
+      logger.info('Migrated agent cursors from router_state to agent_cursors table');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to migrate agent cursors');
+  }
+
+  // Thread-optimized message indexes
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(chat_jid, thread_ts, timestamp);
+  `);
 }
 
 export function initDatabase(): void {
@@ -128,12 +496,18 @@ export function initDatabase(): void {
 
   // Migrate from JSON files if they exist
   migrateJsonState();
+  ensureDefaultAgentRegistrations();
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+/** @internal - for tests only. Seeds default team registrations. */
+export function _ensureDefaultAgentRegistrationsForTests(): void {
+  ensureDefaultAgentRegistrations();
 }
 
 /**
@@ -240,7 +614,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, is_cross_agent, agent_source, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -250,11 +624,14 @@ export function storeMessage(msg: NewMessage): void {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    0,
+    msg.agent_source ?? null,
+    msg.thread_ts ?? null,
   );
 }
 
 /**
- * Store a message directly (for non-WhatsApp channels that don't use Baileys proto).
+ * Store a message directly.
  */
 export function storeMessageDirect(msg: {
   id: string;
@@ -265,9 +642,11 @@ export function storeMessageDirect(msg: {
   timestamp: string;
   is_from_me: boolean;
   is_bot_message?: boolean;
+  agent_source?: string;
+  thread_ts?: string;
 }): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, is_cross_agent, agent_source, thread_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -277,58 +656,102 @@ export function storeMessageDirect(msg: {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    0,
+    msg.agent_source ?? null,
+    msg.thread_ts ?? null,
   );
 }
 
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
-  botPrefix: string,
 ): { messages: NewMessage[]; newTimestamp: string } {
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
   const placeholders = jids.map(() => '?').join(',');
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders})
-      AND is_bot_message = 0 AND content NOT LIKE ?
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
 
-  const rows = db
-    .prepare(sql)
-    .all(lastTimestamp, ...jids, `${botPrefix}:%`) as NewMessage[];
-
-  let newTimestamp = lastTimestamp;
-  for (const row of rows) {
-    if (row.timestamp > newTimestamp) newTimestamp = row.timestamp;
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
   }
 
-  return { messages: rows, newTimestamp };
+  const rows = db
+    .prepare(sql)
+    .all(lastTimestamp, ...jids) as RawRow[];
+
+  let newTimestamp = lastTimestamp;
+  const messages: NewMessage[] = [];
+  for (const row of rows) {
+    if (row.timestamp > newTimestamp) newTimestamp = row.timestamp;
+    messages.push({
+      id: row.id,
+      chat_jid: row.chat_jid,
+      sender: row.sender,
+      sender_name: row.sender_name,
+      content: row.content,
+      timestamp: row.timestamp,
+      thread_ts: row.thread_ts ?? undefined,
+      is_bot_message: !!row.is_bot_message,
+      agent_source: row.agent_source ?? undefined,
+    });
+  }
+
+  return { messages, newTimestamp };
 }
 
 export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
-  botPrefix: string,
 ): NewMessage[] {
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
-      AND is_bot_message = 0 AND content NOT LIKE ?
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
-  return db
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
+  }
+
+  const rows = db
     .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
+    .all(chatJid, sinceTimestamp) as RawRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    thread_ts: row.thread_ts ?? undefined,
+    is_bot_message: !!row.is_bot_message,
+    agent_source: row.agent_source ?? undefined,
+  }));
 }
 
 export function createTask(
@@ -336,14 +759,17 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, code_snippet, snippet_language, snippet_venv_path, schedule_type, schedule_value, context_mode, next_run, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
     task.group_folder,
     task.chat_jid,
     task.prompt,
+    task.code_snippet || null,
+    task.snippet_language || 'javascript',
+    task.snippet_venv_path || null,
     task.schedule_type,
     task.schedule_value,
     task.context_mode || 'isolated',
@@ -378,16 +804,41 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'chat_jid'
+      | 'prompt'
+      | 'code_snippet'
+      | 'snippet_language'
+      | 'snippet_venv_path'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'context_mode'
+      | 'next_run'
+      | 'status'
     >
   >,
 ): void {
   const fields: string[] = [];
   const values: unknown[] = [];
 
+  if (updates.chat_jid !== undefined) {
+    fields.push('chat_jid = ?');
+    values.push(updates.chat_jid);
+  }
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
     values.push(updates.prompt);
+  }
+  if (updates.code_snippet !== undefined) {
+    fields.push('code_snippet = ?');
+    values.push(updates.code_snippet);
+  }
+  if (updates.snippet_language !== undefined) {
+    fields.push('snippet_language = ?');
+    values.push(updates.snippet_language);
+  }
+  if (updates.snippet_venv_path !== undefined) {
+    fields.push('snippet_venv_path = ?');
+    values.push(updates.snippet_venv_path);
   }
   if (updates.schedule_type !== undefined) {
     fields.push('schedule_type = ?');
@@ -396,6 +847,10 @@ export function updateTask(
   if (updates.schedule_value !== undefined) {
     fields.push('schedule_value = ?');
     values.push(updates.schedule_value);
+  }
+  if (updates.context_mode !== undefined) {
+    fields.push('context_mode = ?');
+    values.push(updates.context_mode);
   }
   if (updates.next_run !== undefined) {
     fields.push('next_run = ?');
@@ -420,6 +875,41 @@ export function deleteTask(id: string): void {
   db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
 }
 
+export function claimDueTasks(): ScheduledTask[] {
+  const now = new Date().toISOString();
+  return db.transaction(() => {
+    const dueTasks = db
+      .prepare(
+        `
+      SELECT * FROM scheduled_tasks
+      WHERE status = 'active' AND next_run IS NOT NULL AND next_run <= ?
+      ORDER BY next_run
+    `,
+      )
+      .all(now) as ScheduledTask[];
+
+    if (dueTasks.length === 0) return [] as ScheduledTask[];
+
+    const claim = db.prepare(
+      `
+      UPDATE scheduled_tasks
+      SET status = 'running'
+      WHERE id = ? AND status = 'active'
+    `,
+    );
+
+    const claimed: ScheduledTask[] = [];
+    for (const task of dueTasks) {
+      const info = claim.run(task.id);
+      if (info.changes > 0) {
+        claimed.push({ ...task, status: 'running' });
+      }
+    }
+
+    return claimed;
+  })();
+}
+
 export function getDueTasks(): ScheduledTask[] {
   const now = new Date().toISOString();
   return db
@@ -442,7 +932,11 @@ export function updateTaskAfterRun(
   db.prepare(
     `
     UPDATE scheduled_tasks
-    SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END
+    SET next_run = ?, last_run = ?, last_result = ?, status = CASE
+      WHEN status = 'paused' THEN 'paused'
+      WHEN ? IS NULL THEN 'completed'
+      ELSE 'active'
+    END
     WHERE id = ?
   `,
   ).run(nextRun, now, lastResult, nextRun, id);
@@ -479,55 +973,202 @@ export function setRouterState(key: string, value: string): void {
   ).run(key, value);
 }
 
-// --- Session accessors ---
+// --- Session accessors (thread-aware) ---
 
-export function getSession(groupFolder: string): string | undefined {
+export function getSession(
+  agentFolder: string,
+  chatJid: string,
+  threadTs: string,
+): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
+    .prepare(
+      'SELECT session_id FROM sessions WHERE agent_folder = ? AND chat_jid = ? AND thread_ts = ?',
+    )
+    .get(agentFolder, chatJid, threadTs) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(
+  agentFolder: string,
+  chatJid: string,
+  threadTs: string,
+  sessionId: string,
+): void {
+  const now = new Date().toISOString();
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    `INSERT INTO sessions (agent_folder, chat_jid, thread_ts, session_id, created_at, last_active)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(agent_folder, chat_jid, thread_ts) DO UPDATE SET
+       session_id = excluded.session_id,
+       last_active = excluded.last_active`,
+  ).run(agentFolder, chatJid, threadTs, sessionId, now, now);
 }
 
-export function deleteSession(groupFolder: string): void {
-  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+export function deleteSession(
+  agentFolder: string,
+  chatJid?: string,
+  threadTs?: string,
+): void {
+  if (chatJid && threadTs) {
+    // Delete specific thread session
+    db.prepare(
+      'DELETE FROM sessions WHERE agent_folder = ? AND chat_jid = ? AND thread_ts = ?',
+    ).run(agentFolder, chatJid, threadTs);
+  } else if (chatJid) {
+    // Delete all sessions for agent in a channel
+    db.prepare(
+      'DELETE FROM sessions WHERE agent_folder = ? AND chat_jid = ?',
+    ).run(agentFolder, chatJid);
+  } else {
+    // Delete all sessions for agent
+    db.prepare('DELETE FROM sessions WHERE agent_folder = ?').run(agentFolder);
+  }
 }
 
-export function getAllSessions(): Record<string, string> {
+/**
+ * Delete sessions older than the given number of days.
+ * Returns the number of sessions deleted.
+ */
+export function cleanupOldSessions(maxAgeDays: number = 7): number {
+  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db.prepare(
+    'DELETE FROM sessions WHERE last_active < ?',
+  ).run(cutoff);
+  return result.changes;
+}
+
+// --- Agent cursor accessors ---
+
+export function getAgentCursor(
+  agentFolder: string,
+  chatJid: string,
+): string {
+  const row = db
+    .prepare(
+      'SELECT last_processed_ts FROM agent_cursors WHERE agent_folder = ? AND chat_jid = ?',
+    )
+    .get(agentFolder, chatJid) as { last_processed_ts: string } | undefined;
+  return row?.last_processed_ts ?? '';
+}
+
+export function setAgentCursor(
+  agentFolder: string,
+  chatJid: string,
+  timestamp: string,
+): void {
+  db.prepare(
+    `INSERT INTO agent_cursors (agent_folder, chat_jid, last_processed_ts)
+     VALUES (?, ?, ?)
+     ON CONFLICT(agent_folder, chat_jid) DO UPDATE SET last_processed_ts = excluded.last_processed_ts`,
+  ).run(agentFolder, chatJid, timestamp);
+}
+
+export function getAllAgentCursors(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
+    .prepare('SELECT agent_folder, chat_jid, last_processed_ts FROM agent_cursors')
+    .all() as Array<{ agent_folder: string; chat_jid: string; last_processed_ts: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    result[`${row.chat_jid}::${row.agent_folder}`] = row.last_processed_ts;
   }
   return result;
 }
 
+// --- Thread-aware message queries ---
+
+/**
+ * Get all messages in a specific thread.
+ */
+export function getThreadMessages(
+  chatJid: string,
+  threadTs: string,
+): NewMessage[] {
+  const sql = `
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+           is_bot_message, agent_source
+    FROM messages
+    WHERE chat_jid = ? AND thread_ts = ?
+      AND content != '' AND content IS NOT NULL
+    ORDER BY timestamp
+  `;
+  interface RawRow {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
+  }
+  const rows = db.prepare(sql).all(chatJid, threadTs) as RawRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    thread_ts: row.thread_ts ?? undefined,
+    is_bot_message: !!row.is_bot_message,
+    agent_source: row.agent_source ?? undefined,
+  }));
+}
+
+export function getMessageById(
+  chatJid: string,
+  id: string,
+): NewMessage | undefined {
+  const row = db.prepare(
+    `SELECT id, chat_jid, sender, sender_name, content, timestamp, thread_ts,
+            is_bot_message, agent_source
+     FROM messages
+     WHERE chat_jid = ? AND id = ?`,
+  ).get(chatJid, id) as {
+    id: string;
+    chat_jid: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    thread_ts: string | null;
+    is_bot_message: number;
+    agent_source: string | null;
+  } | undefined;
+
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    chat_jid: row.chat_jid,
+    sender: row.sender,
+    sender_name: row.sender_name,
+    content: row.content,
+    timestamp: row.timestamp,
+    thread_ts: row.thread_ts ?? undefined,
+    is_bot_message: !!row.is_bot_message,
+    agent_source: row.agent_source ?? undefined,
+  };
+}
+
 // --- Registered group accessors ---
 
-export function getRegisteredGroup(
-  jid: string,
+type RegisteredGroupRow = {
+  jid: string;
+  name: string;
+  folder: string;
+  trigger_pattern: string;
+  added_at: string;
+  container_config: string | null;
+  requires_trigger: number | null;
+  role: string | null;
+  aliases: string | null;
+  gateway: string | null;
+};
+
+function mapRegisteredGroupRow(
+  row: RegisteredGroupRow,
 ): (RegisteredGroup & { jid: string }) | undefined {
-  const row = db
-    .prepare('SELECT * FROM registered_groups WHERE jid = ?')
-    .get(jid) as
-    | {
-        jid: string;
-        name: string;
-        folder: string;
-        trigger_pattern: string;
-        added_at: string;
-        container_config: string | null;
-        requires_trigger: number | null;
-      }
-    | undefined;
-  if (!row) return undefined;
   if (!isValidGroupFolder(row.folder)) {
     logger.warn(
       { jid: row.jid, folder: row.folder },
@@ -535,17 +1176,64 @@ export function getRegisteredGroup(
     );
     return undefined;
   }
+
+  let aliases: string[];
+  try {
+    aliases = row.aliases ? JSON.parse(row.aliases) : [];
+  } catch {
+    aliases = [];
+  }
+  // Fallback: derive aliases from trigger if not stored
+  if (aliases.length === 0) {
+    const trigger = row.trigger_pattern?.trim();
+    if (trigger) {
+      const label = trigger.startsWith('@') ? trigger.slice(1) : trigger;
+      if (label) aliases = [label];
+    }
+  }
+
+  let gateway: AgentGateway;
+  try {
+    gateway = row.gateway ? JSON.parse(row.gateway) : { rules: [] };
+  } catch {
+    gateway = { rules: [] };
+  }
+  // Fallback: derive gateway from requiresTrigger if not stored
+  if (gateway.rules.length === 0) {
+    const requiresTrigger = row.requires_trigger === null ? undefined : row.requires_trigger === 1;
+    if (requiresTrigger === false) {
+      gateway = { rules: [{ match: 'any_message' }] };
+    } else {
+      gateway = { rules: [{ match: 'self_mention' }] };
+    }
+  }
+
   return {
     jid: row.jid,
     name: row.name,
     folder: row.folder,
     trigger: row.trigger_pattern,
+    aliases,
     added_at: row.added_at,
     containerConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
     requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    gateway,
+    role: row.role ?? undefined,
   };
+}
+
+export function getRegisteredGroup(
+  jid: string,
+): (RegisteredGroup & { jid: string }) | undefined {
+  const row = db
+    .prepare(
+      `SELECT * FROM registered_groups WHERE jid = ? ORDER BY added_at DESC, folder LIMIT 1`,
+    )
+    .get(jid) as RegisteredGroupRow | undefined;
+  if (!row) return undefined;
+  return mapRegisteredGroupRow(row);
 }
 
 export function setRegisteredGroup(
@@ -555,53 +1243,311 @@ export function setRegisteredGroup(
   if (!isValidGroupFolder(group.folder)) {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
-  db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    jid,
-    group.name,
-    group.folder,
-    group.trigger,
-    group.added_at,
-    group.containerConfig ? JSON.stringify(group.containerConfig) : null,
-    group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
-  );
+  const upsert = db.transaction(() => {
+    db.prepare(
+      'DELETE FROM registered_groups WHERE jid = ? AND folder != ?',
+    ).run(jid, group.folder);
+    db.prepare(
+      'DELETE FROM registered_groups WHERE folder = ? AND jid != ?',
+    ).run(group.folder, jid);
+    db.prepare(
+      `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role, aliases, gateway)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(jid) DO UPDATE SET
+         name = excluded.name,
+         folder = excluded.folder,
+         trigger_pattern = excluded.trigger_pattern,
+         added_at = excluded.added_at,
+         container_config = excluded.container_config,
+         requires_trigger = excluded.requires_trigger,
+         role = excluded.role,
+         aliases = excluded.aliases,
+         gateway = excluded.gateway`,
+    ).run(
+      jid,
+      group.name,
+      group.folder,
+      group.trigger,
+      group.added_at,
+      group.containerConfig ? JSON.stringify(group.containerConfig) : null,
+      group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
+      group.role ?? null,
+      group.aliases?.length ? JSON.stringify(group.aliases) : null,
+      group.gateway?.rules?.length ? JSON.stringify(group.gateway) : null,
+    );
+  });
+  upsert();
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   const rows = db
-    .prepare('SELECT * FROM registered_groups')
-    .all() as Array<{
-    jid: string;
-    name: string;
-    folder: string;
-    trigger_pattern: string;
-    added_at: string;
-    container_config: string | null;
-    requires_trigger: number | null;
-  }>;
+    .prepare('SELECT * FROM registered_groups ORDER BY jid, added_at, folder')
+    .all() as RegisteredGroupRow[];
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
-    if (!isValidGroupFolder(row.folder)) {
-      logger.warn(
-        { jid: row.jid, folder: row.folder },
-        'Skipping registered group with invalid folder',
-      );
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) {
       continue;
     }
-    result[row.jid] = {
-      name: row.name,
-      folder: row.folder,
-      trigger: row.trigger_pattern,
-      added_at: row.added_at,
-      containerConfig: row.container_config
-        ? JSON.parse(row.container_config)
-        : undefined,
-      requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    };
+    const { jid, ...group } = mapped;
+    result[jid] = group;
   }
   return result;
+}
+
+export function getAgentsByChannel(jid: string): RegisteredGroup[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM registered_groups WHERE jid = ? ORDER BY added_at, folder',
+    )
+    .all(jid) as RegisteredGroupRow[];
+
+  const groups: RegisteredGroup[] = [];
+  for (const row of rows) {
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) continue;
+    const { jid: _jid, ...group } = mapped;
+    groups.push(group);
+  }
+  return groups;
+}
+
+/**
+ * Get all unique agents (deduplicated by folder) across all channels.
+ */
+export function getAllUniqueAgents(): RegisteredGroup[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM registered_groups ORDER BY added_at, folder',
+    )
+    .all() as RegisteredGroupRow[];
+
+  const seen = new Set<string>();
+  const agents: RegisteredGroup[] = [];
+  for (const row of rows) {
+    if (seen.has(row.folder)) continue;
+    seen.add(row.folder);
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) continue;
+    const { jid: _jid, ...group } = mapped;
+    agents.push(group);
+  }
+  return agents;
+}
+
+export function getChannelsForAgent(folder: string): string[] {
+  const rows = db
+    .prepare(
+      'SELECT DISTINCT jid FROM registered_groups WHERE folder = ? ORDER BY jid',
+    )
+    .all(folder) as Array<{ jid: string }>;
+  return rows.map((row) => row.jid);
+}
+
+function normalizeGithubRepoFullName(repo: string): string {
+  return repo.trim().toLowerCase();
+}
+
+export function findPmAgentByGithubRepo(
+  repoFullName: string,
+): ((RegisteredGroup & { jid: string }) | undefined) {
+  const target = normalizeGithubRepoFullName(repoFullName);
+  const rows = db
+    .prepare(
+      `SELECT * FROM registered_groups
+       WHERE role = 'pm-agent'
+       ORDER BY added_at, folder`,
+    )
+    .all() as RegisteredGroupRow[];
+
+  for (const row of rows) {
+    const mapped = mapRegisteredGroupRow(row);
+    if (!mapped) continue;
+    const configuredRepo = mapped.containerConfig?.envVars?.GITHUB_REPO;
+    if (!configuredRepo) continue;
+    if (normalizeGithubRepoFullName(configuredRepo) === target) {
+      return mapped;
+    }
+  }
+
+  return undefined;
+}
+
+interface GithubWebhookDeliveryRow {
+  delivery_id: string;
+  event_name: string;
+  action: string | null;
+  repository_full_name: string | null;
+  installation_id: number | null;
+  resource_key: string | null;
+  received_at: string;
+  status: GithubWebhookDeliveryStatus;
+  error: string | null;
+  payload_json: string;
+}
+
+export function getGithubWebhookDelivery(
+  deliveryId: string,
+): GithubWebhookDeliveryRecord | undefined {
+  return db
+    .prepare('SELECT * FROM github_webhook_deliveries WHERE delivery_id = ?')
+    .get(deliveryId) as GithubWebhookDeliveryRecord | undefined;
+}
+
+export function createGithubWebhookDelivery(
+  delivery: GithubWebhookDeliveryRecord,
+): void {
+  db.prepare(
+    `INSERT INTO github_webhook_deliveries (
+      delivery_id,
+      event_name,
+      action,
+      repository_full_name,
+      installation_id,
+      resource_key,
+      received_at,
+      status,
+      error,
+      payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    delivery.delivery_id,
+    delivery.event_name,
+    delivery.action,
+    delivery.repository_full_name,
+    delivery.installation_id,
+    delivery.resource_key,
+    delivery.received_at,
+    delivery.status,
+    delivery.error,
+    delivery.payload_json,
+  );
+}
+
+export function updateGithubWebhookDelivery(
+  deliveryId: string,
+  updates: Partial<
+    Pick<
+      GithubWebhookDeliveryRecord,
+      'action' | 'repository_full_name' | 'installation_id' | 'resource_key' | 'status' | 'error'
+    >
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.action !== undefined) {
+    fields.push('action = ?');
+    values.push(updates.action);
+  }
+  if (updates.repository_full_name !== undefined) {
+    fields.push('repository_full_name = ?');
+    values.push(updates.repository_full_name);
+  }
+  if (updates.installation_id !== undefined) {
+    fields.push('installation_id = ?');
+    values.push(updates.installation_id);
+  }
+  if (updates.resource_key !== undefined) {
+    fields.push('resource_key = ?');
+    values.push(updates.resource_key);
+  }
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(deliveryId);
+  db.prepare(
+    `UPDATE github_webhook_deliveries SET ${fields.join(', ')} WHERE delivery_id = ?`,
+  ).run(...values);
+}
+
+type GithubEventRunRow = Omit<GithubEventRunRecord, 'id'> & { id: number };
+
+export function createGithubEventRun(
+  run: Omit<GithubEventRunRecord, 'id'>,
+): number {
+  const info = db.prepare(
+    `INSERT INTO github_event_runs (
+      delivery_id,
+      group_folder,
+      resource_type,
+      resource_key,
+      chat_jid,
+      thread_ts,
+      session_mode,
+      trigger_kind,
+      status,
+      result,
+      error,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    run.delivery_id,
+    run.group_folder,
+    run.resource_type,
+    run.resource_key,
+    run.chat_jid,
+    run.thread_ts,
+    run.session_mode,
+    run.trigger_kind,
+    run.status,
+    run.result,
+    run.error,
+    run.created_at,
+    run.updated_at,
+  );
+  return Number(info.lastInsertRowid);
+}
+
+export function getGithubEventRun(
+  id: number,
+): GithubEventRunRecord | undefined {
+  return db
+    .prepare('SELECT * FROM github_event_runs WHERE id = ?')
+    .get(id) as GithubEventRunRow | undefined;
+}
+
+export function updateGithubEventRun(
+  id: number,
+  updates: Partial<
+    Pick<GithubEventRunRecord, 'status' | 'result' | 'error' | 'updated_at'>
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.result !== undefined) {
+    fields.push('result = ?');
+    values.push(updates.result);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+  if (updates.updated_at !== undefined) {
+    fields.push('updated_at = ?');
+    values.push(updates.updated_at);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(
+    `UPDATE github_event_runs SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
 }
 
 // --- JSON migration ---
@@ -628,6 +1574,7 @@ function migrateJsonState(): void {
     if (routerState.last_timestamp) {
       setRouterState('last_timestamp', routerState.last_timestamp);
     }
+    // Agent cursors are now migrated to agent_cursors table in createSchema
     if (routerState.last_agent_timestamp) {
       setRouterState(
         'last_agent_timestamp',
@@ -636,15 +1583,15 @@ function migrateJsonState(): void {
     }
   }
 
-  // Migrate sessions.json
+  // Migrate sessions.json (old format: { folder: sessionId })
+  // New sessions are thread-aware; old ones are discarded since we can't
+  // determine which channel/thread they belonged to.
   const sessions = migrateFile('sessions.json') as Record<
     string,
     string
   > | null;
   if (sessions) {
-    for (const [folder, sessionId] of Object.entries(sessions)) {
-      setSession(folder, sessionId);
-    }
+    logger.info('Old sessions.json found and archived (sessions will be recreated)');
   }
 
   // Migrate registered_groups.json

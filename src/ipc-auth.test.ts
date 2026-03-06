@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 import {
   _initTestDatabase,
@@ -11,7 +13,12 @@ import {
   setSession,
   setRegisteredGroup,
 } from './db.js';
-import { processTaskIpc, IpcDeps } from './ipc.js';
+import {
+  _setHostCommandRunnerForTest,
+  processTaskIpc,
+  IpcDeps,
+} from './ipc.js';
+import { DATA_DIR, HOST_REPOS_DIR } from './config.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -19,28 +26,37 @@ const MAIN_GROUP: RegisteredGroup = {
   name: 'Main',
   folder: 'main',
   trigger: 'always',
+  aliases: ['main'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'any_message' }] },
 };
 
 const OTHER_GROUP: RegisteredGroup = {
   name: 'Other',
   folder: 'other-group',
   trigger: '@Andy',
+  aliases: ['andy'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'self_mention' }] },
 };
 
 const THIRD_GROUP: RegisteredGroup = {
   name: 'Third',
   folder: 'third-group',
   trigger: '@Andy',
+  aliases: ['andy'],
   added_at: '2024-01-01T00:00:00.000Z',
+  gateway: { rules: [{ match: 'self_mention' }] },
 };
 
 let groups: Record<string, RegisteredGroup>;
 let deps: IpcDeps;
+let sentMessages: Array<{ jid: string; text: string }>;
 
 beforeEach(() => {
   _initTestDatabase();
+  _setHostCommandRunnerForTest();
+  sentMessages = [];
 
   groups = {
     'main@g.us': MAIN_GROUP,
@@ -54,7 +70,9 @@ beforeEach(() => {
   setRegisteredGroup('third@g.us', THIRD_GROUP);
 
   deps = {
-    sendMessage: async () => {},
+    sendMessage: async (jid, text) => {
+      sentMessages.push({ jid, text });
+    },
     sendFile: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
@@ -69,6 +87,15 @@ beforeEach(() => {
       deleteSession(groupFolder);
     },
   };
+
+  fs.rmSync(path.join(DATA_DIR, 'ipc', 'other-group', 'responses'), {
+    recursive: true,
+    force: true,
+  });
+  fs.rmSync(path.join(HOST_REPOS_DIR, 'autorag-research'), {
+    recursive: true,
+    force: true,
+  });
 });
 
 // --- schedule_task authorization ---
@@ -600,6 +627,26 @@ describe('register_group success', () => {
     expect(group!.trigger).toBe('@Andy');
   });
 
+  it('register_group passes role through to registration handler', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'pm@g.us',
+        name: 'PM Agent',
+        folder: 'pm-agent',
+        trigger: '@pm',
+        role: 'pm-agent',
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    const group = getRegisteredGroup('pm@g.us');
+    expect(group).toBeDefined();
+    expect(group!.role).toBe('pm-agent');
+  });
+
   it('register_group rejects request with missing fields', async () => {
     await processTaskIpc(
       {
@@ -621,8 +668,8 @@ describe('register_group success', () => {
 
 describe('clear_session authorization', () => {
   beforeEach(() => {
-    setSession('other-group', 'session-other');
-    setSession('main', 'session-main');
+    setSession('other-group', 'other@g.us', '__channel__', 'session-other');
+    setSession('main', 'main@g.us', '__channel__', 'session-main');
   });
 
   it('main group can clear another group session', async () => {
@@ -636,7 +683,7 @@ describe('clear_session authorization', () => {
       deps,
     );
 
-    expect(getSession('other-group')).toBeUndefined();
+    expect(getSession('other-group', 'other@g.us', '__channel__')).toBeUndefined();
   });
 
   it('non-main group cannot clear another group session', async () => {
@@ -650,6 +697,438 @@ describe('clear_session authorization', () => {
       deps,
     );
 
-    expect(getSession('main')).toBe('session-main');
+    expect(getSession('main', 'main@g.us', '__channel__')).toBe('session-main');
+  });
+});
+
+// --- host repo task authorization and execution ---
+
+describe('host repo IPC tasks', () => {
+  function configureAllowedRepo(repo: string): string {
+    const updated = {
+      ...groups['other@g.us'],
+      containerConfig: {
+        envVars: {
+          ALLOWED_REPOS: repo,
+        },
+      },
+    };
+    groups['other@g.us'] = updated;
+    setRegisteredGroup('other@g.us', updated);
+
+    const repoPath = path.join(HOST_REPOS_DIR, repo);
+    fs.mkdirSync(repoPath, { recursive: true });
+    return repoPath;
+  }
+
+  function readTaskResponse(requestId: string): any {
+    const responsePath = path.join(
+      DATA_DIR,
+      'ipc',
+      'other-group',
+      'responses',
+      `${requestId}.json`,
+    );
+    expect(fs.existsSync(responsePath)).toBe(true);
+    return JSON.parse(fs.readFileSync(responsePath, 'utf-8'));
+  }
+
+  it('rejects unauthorized repo access and writes error response', async () => {
+    const runner = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'git_checkout',
+        requestId: 'req-unauthorized',
+        repo: 'private-repo',
+        branch: 'main',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).not.toHaveBeenCalled();
+    const response = readTaskResponse('req-unauthorized');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('not allowed');
+  });
+
+  it('runs codex_exec in allowed repo and writes stdout response', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (command: string, args: string[]) => {
+      if (command === 'git') return { stdout: '', stderr: '' };
+      if (command === 'codex') return { stdout: 'codex complete', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'codex_exec',
+        requestId: 'req-codex',
+        repo: 'autorag-research',
+        prompt: 'Implement feature X',
+        branch: 'feat/us-005',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenNthCalledWith(
+      1,
+      'git',
+      ['checkout', 'feat/us-005'],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+    expect(runner).toHaveBeenNthCalledWith(
+      2,
+      'codex',
+      expect.arrayContaining(['exec', '--dangerously-bypass-approvals-and-sandbox', '--cd', repoPath]),
+      expect.any(Object),
+    );
+
+    const response = readTaskResponse('req-codex');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toBe('codex complete');
+  });
+
+  it('git_pull defaults to current branch when none is provided', async () => {
+    configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'rev-parse') return { stdout: 'main\n', stderr: '' };
+      if (args[0] === 'pull') return { stdout: 'Already up to date.', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'git_pull',
+        requestId: 'req-pull',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenNthCalledWith(
+      1,
+      'git',
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      expect.any(Object),
+    );
+    expect(runner).toHaveBeenNthCalledWith(
+      2,
+      'git',
+      ['pull', 'origin', 'main'],
+      expect.any(Object),
+    );
+
+    const response = readTaskResponse('req-pull');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('Already up to date.');
+  });
+
+  it('gh_issue_list normalizes issues to number/title/body/labels/state', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'issue' && args[1] === 'list') {
+        return {
+          stdout: JSON.stringify([
+            {
+              number: 17,
+              title: 'Improve triage flow',
+              body: 'Need clearer PM issue triage output.',
+              state: 'OPEN',
+              labels: [{ name: 'enhancement' }, { name: 'pm' }],
+              url: 'https://github.com/example/repo/issues/17',
+            },
+            {
+              number: 18,
+              title: 'Issue without body',
+              body: null,
+              state: 'CLOSED',
+              labels: [],
+              url: 'https://github.com/example/repo/issues/18',
+            },
+          ]),
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_list',
+        requestId: 'req-gh-list',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      [
+        'issue',
+        'list',
+        '--state',
+        'open',
+        '--json',
+        'number,title,body,state,labels,url',
+      ],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-list');
+    expect(response.ok).toBe(true);
+    expect(JSON.parse(response.stdout)).toEqual([
+      {
+        number: 17,
+        title: 'Improve triage flow',
+        body: 'Need clearer PM issue triage output.',
+        labels: ['enhancement', 'pm'],
+        state: 'open',
+      },
+      {
+        number: 18,
+        title: 'Issue without body',
+        body: '',
+        labels: [],
+        state: 'closed',
+      },
+    ]);
+  });
+
+  it('gh_issue_list returns an error when gh output is not valid JSON', async () => {
+    configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'issue' && args[1] === 'list') {
+        return { stdout: 'not-json', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_list',
+        requestId: 'req-gh-list-invalid',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const response = readTaskResponse('req-gh-list-invalid');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain('Failed to parse gh issue list output');
+  });
+
+  it('gh_issue_comment posts a comment to the requested issue number', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'issue' && args[1] === 'comment') {
+        return { stdout: 'https://github.com/example/repo/issues/17#issuecomment-1', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_comment',
+        requestId: 'req-gh-comment',
+        repo: 'autorag-research',
+        issue_number: 17,
+        body: 'Initial PM triage complete.',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      [
+        'issue',
+        'comment',
+        '17',
+        '--body',
+        'Initial PM triage complete.\n\n<!-- nanoclaw:github-event -->',
+      ],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-comment');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('issuecomment');
+  });
+
+  it('gh_issue_linked_prs returns PRs linked to the requested issue number', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') {
+        return {
+          stdout: JSON.stringify([
+            {
+              number: 313,
+              title: 'End-to-end pipeline test with CLI',
+              state: 'OPEN',
+              isDraft: false,
+              url: 'https://github.com/example/repo/pull/313',
+              mergedAt: null,
+              closingIssuesReferences: [{ number: 310 }],
+            },
+            {
+              number: 200,
+              title: 'Unrelated PR',
+              state: 'MERGED',
+              isDraft: false,
+              url: 'https://github.com/example/repo/pull/200',
+              mergedAt: '2026-03-01T00:00:00Z',
+              closingIssuesReferences: [{ number: 42 }],
+            },
+          ]),
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_linked_prs',
+        requestId: 'req-gh-linked-prs',
+        repo: 'autorag-research',
+        issue_number: 310,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      [
+        'pr',
+        'list',
+        '--state',
+        'all',
+        '--limit',
+        '500',
+        '--json',
+        'number,title,state,isDraft,url,mergedAt,closingIssuesReferences',
+      ],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-linked-prs');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toBeDefined();
+    expect(JSON.parse(response.stdout ?? '[]')).toEqual([
+      {
+        number: 313,
+        title: 'End-to-end pipeline test with CLI',
+        state: 'OPEN',
+        isDraft: false,
+        url: 'https://github.com/example/repo/pull/313',
+        mergedAt: null,
+      },
+    ]);
+  });
+
+  it('gh_pr_diff fetches the PR diff for the requested PR number', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'diff') {
+        return { stdout: 'diff --git a/src/a.ts b/src/a.ts\n+new line', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_pr_diff',
+        requestId: 'req-gh-pr-diff',
+        repo: 'autorag-research',
+        pr_number: 42,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      ['pr', 'diff', '42'],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-pr-diff');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('diff --git');
+  });
+
+  it('gh_pr_review posts a structured comment review to the PR', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+    const reviewBody =
+      '## Summary\n- Looks mostly good.\n\n## Issues\n- warning: missing null guard.\n\n## Overall Assessment\nRequest updates.';
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'review') {
+        return { stdout: 'review submitted', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_pr_review',
+        requestId: 'req-gh-pr-review',
+        repo: 'autorag-research',
+        pr_number: 42,
+        body: reviewBody,
+        review_event: 'comment',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      [
+        'pr',
+        'review',
+        '42',
+        '--comment',
+        '--body',
+        `${reviewBody}\n\n<!-- nanoclaw:github-event -->`,
+      ],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-pr-review');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toContain('review submitted');
   });
 });

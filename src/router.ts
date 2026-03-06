@@ -1,4 +1,4 @@
-import { Channel, NewMessage } from './types.js';
+import { Channel, NewMessage, OutboundMessageOptions } from './types.js';
 
 export function escapeXml(s: string): string {
   if (!s) return '';
@@ -10,9 +10,12 @@ export function escapeXml(s: string): string {
 }
 
 export function formatMessages(messages: NewMessage[]): string {
-  const lines = messages.map((m) =>
-    `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
-  );
+  const lines = messages.map((m) => {
+    const threadAttr = (m.thread_ts && m.thread_ts !== m.id)
+      ? ` thread="${escapeXml(m.thread_ts)}"`
+      : '';
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${threadAttr}>${escapeXml(m.content)}</message>`;
+  });
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
 
@@ -37,20 +40,32 @@ export function stripInternalTags(text: string): string {
   return sanitized.trim();
 }
 
+export function normalizeSlackMarkdown(text: string): string {
+  let out = text;
+  // **bold** → *bold*
+  out = out.replace(/\*\*(.+?)\*\*/g, '*$1*');
+  // ## Heading → *Heading*
+  out = out.replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+  // [text](url) → text (url)
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
+  return out;
+}
+
 export function formatOutbound(rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
-  return text;
+  return normalizeSlackMarkdown(text);
 }
 
 export function routeOutbound(
   channels: Channel[],
   jid: string,
   text: string,
+  options?: OutboundMessageOptions,
 ): Promise<void> {
   const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
   if (!channel) throw new Error(`No channel for JID: ${jid}`);
-  return channel.sendMessage(jid, text);
+  return channel.sendMessage(jid, text, options);
 }
 
 export function findChannel(

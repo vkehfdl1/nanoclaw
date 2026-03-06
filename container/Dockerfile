@@ -45,8 +45,16 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Install agent-browser, actionbook CLI, and claude-code globally
+RUN npm install -g agent-browser @actionbookdev/cli @anthropic-ai/claude-code
+
+# Install PM agent helper scripts
+COPY skills/github-issues/list-issues /usr/local/bin/list-issues
+RUN chmod +x /usr/local/bin/list-issues
+
+# Install secondbrain-write shared utility (used by PM agents to write insights to SecondBrain)
+COPY secondbrain-write.mjs /usr/local/bin/secondbrain-write
+RUN chmod +x /usr/local/bin/secondbrain-write
 
 # Create app directory
 WORKDIR /app

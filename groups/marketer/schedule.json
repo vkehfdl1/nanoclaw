@@ -1,0 +1,36 @@
+{
+  "version": "1",
+  "description": "Marketer agent recurring schedule. All Slack-facing summaries and approval requests must be sent in Korean.",
+  "tasks": [
+    {
+      "id": "marketer-daily-sns-trend-check",
+      "name": "Daily SNS Trend Check",
+      "description": "Run a concrete daily trend sweep and surface only evidence-backed opportunities.",
+      "enabled": true,
+      "schedule_type": "cron",
+      "schedule_value": "0 9 * * *",
+      "context_mode": "group",
+      "prompt": "Run the daily SNS trend check.\n\n1. Read /workspace/group/brand/profile.md and /workspace/group/config/platforms.json.\n2. Choose up to 2 research categories from config.research_categories that best match the current brand profile.\n3. For each chosen category, take the first 3 seed_keywords as today's keyword set.\n4. Collect trend signals in this exact way:\n   - Open X Explore with agent-browser and capture the top tech/AI/productivity-adjacent trends.\n   - For each selected seed keyword, run these web-search patterns:\n     * \"{seed_keyword} trending $(date +%Y-%m)\"\n     * \"site:x.com {seed_keyword} $(date +%Y-%m-%d)\"\n     * \"site:linkedin.com/posts {seed_keyword} $(date +%Y)\"\n     * \"site:threads.net {seed_keyword}\"\n   - Only open LinkedIn or Threads search pages with agent-browser when a keyword shows clear relevance in web results.\n5. For each candidate trend, score it from 1-5 on: recency, relevance to the brand profile, evidence strength, and draftability within 72 hours.\n6. Keep at most 3 opportunities. Discard celebrity gossip, general politics, vague hype, and anything without clear evidence.\n7. Append findings to /workspace/group/research/trends-$(date +%Y-%m).md under a \"Daily Check\" section. For each kept trend include: keyword, source, evidence, why it fits, and suggested angle.\n8. Save /workspace/group/insights/$(date +%Y-%m-%d)-daily.json with fields: trending_topics, search_queries_used, evidence, relevance, suggested_angles, next_action.\n9. Send a Korean Slack summary via mcp__nanoclaw__send_message using this structure:\n   [일일 트렌드 점검]\n   - 후보 1: {topic} / 근거: {evidence} / 각도: {angle}\n   - 후보 2: ...\n   - 후보 3: ...\n   마지막 줄: \"원하면 이 중 하나를 바로 게시물 초안으로 확장하겠습니다.\"\n10. Do not draft or publish a post in this task unless the user explicitly asks for it in a later Slack message."
+    },
+    {
+      "id": "marketer-weekly-content-planning",
+      "name": "Weekly Content Planning",
+      "description": "Create next week's content plan from local research outputs and local publish logs.",
+      "enabled": true,
+      "schedule_type": "cron",
+      "schedule_value": "0 10 * * 1",
+      "context_mode": "group",
+      "prompt": "Run weekly content planning.\n\n1. Review this week's research outputs in /workspace/group/research/ and /workspace/group/insights/.\n2. Review the local operating log at /workspace/group/published/log.md. This file is not in SecondBrain.\n3. Build next week's plan in /workspace/group/campaigns/weekly-$(date +%Y-%m-%d).md with:\n   - platform-by-platform topic lineup\n   - target audience intent per post\n   - the concrete fact or signal each post is based on\n   - recommended CTA or takeaway\n   - draft priority (high/medium/low)\n4. Do not publish or auto-draft from this task. This task is for planning and prioritization only.\n5. Send a Korean Slack summary via mcp__nanoclaw__send_message with:\n   [주간 콘텐츠 계획]\n   - 이번 주 핵심 주제 3개\n   - 우선순위 high 아이템\n   - 보류해도 되는 아이템\n   마지막 줄: \"승인해 주시면 우선순위 높은 항목부터 초안을 준비하겠습니다.\""
+    },
+    {
+      "id": "marketer-comment-sweep",
+      "name": "Periodic Comment Monitoring Sweep",
+      "description": "Check recent comments, prepare reply drafts, and ask for human approval in Korean before posting.",
+      "enabled": true,
+      "schedule_type": "cron",
+      "schedule_value": "0 */6 * * *",
+      "context_mode": "group",
+      "prompt": "Run a comment monitoring sweep across all recently published posts.\n\n1. Check /workspace/group/published/log.md for posts published in the last 7 days.\n2. For each recent post, check for new comments or replies using agent-browser or platform tools.\n3. Classify each comment into one of three buckets:\n   - no-reply-needed\n   - draft-reply\n   - urgent-human-review\n4. For no-reply-needed items, note \"like only\" or \"no action\" in /workspace/group/published/comments-log.md.\n5. For draft-reply items, write a proposed reply but do not post it.\n6. For urgent-human-review items, summarize the situation without drafting a risky answer.\n7. Send one Korean Slack message via mcp__nanoclaw__send_message using this structure:\n   [댓글/답글 검토 요청]\n   - 플랫폼 / 게시물 / 원문 요약\n   - 분류: no-reply-needed | draft-reply | urgent-human-review\n   - 제안 답글: {draft or \"없음\"}\n   마지막 줄: \"승인해 주시면 해당 답글만 게시하겠습니다. 승인 전에는 아무 응답도 게시하지 않겠습니다.\"\n8. Log every reviewed item to /workspace/group/published/comments-log.md with status pending_approval, no_reply_needed, or approved_and_posted.\n9. Stop after sending the Korean approval request. Do not post any reply in this scheduled task unless explicit approval already exists in the current Slack thread."
+    }
+  ]
+}

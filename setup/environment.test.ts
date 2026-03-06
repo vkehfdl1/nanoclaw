@@ -86,18 +86,16 @@ describe('Docker detection logic', () => {
   });
 });
 
-describe('WhatsApp auth detection', () => {
-  it('detects non-empty auth directory logic', () => {
-    // Simulate the check: directory exists and has files
-    const hasAuth = (authDir: string) => {
+describe('directory presence detection', () => {
+  it('returns false for non-existent directory', () => {
+    const hasDirectoryFiles = (dir: string) => {
       try {
-        return fs.existsSync(authDir) && fs.readdirSync(authDir).length > 0;
+        return fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
       } catch {
         return false;
       }
     };
 
-    // Non-existent directory
-    expect(hasAuth('/tmp/nonexistent_auth_dir_xyz')).toBe(false);
+    expect(hasDirectoryFiles('/tmp/nonexistent_dir_xyz')).toBe(false);
   });
 });

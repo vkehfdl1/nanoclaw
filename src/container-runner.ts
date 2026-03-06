@@ -14,6 +14,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  SECONDBRAIN_DIR,
   TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
@@ -32,6 +33,7 @@ export interface ContainerInput {
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
+  threadTs?: string;
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
@@ -45,10 +47,62 @@ export interface ContainerOutput {
   error?: string;
 }
 
+export interface TaskSnippetInput {
+  taskId: string;
+  groupFolder: string;
+  chatJid: string;
+  scheduleType: 'cron' | 'interval' | 'once';
+  scheduleValue: string;
+  snippet: string;
+  snippetLanguage?: 'javascript' | 'bash' | null;
+  isMain: boolean;
+}
+
+export interface TaskSnippetOutput {
+  status: 'pass' | 'skip' | 'error';
+  payload?: unknown;
+  error?: string;
+  traceback?: string;
+  logFile?: string;
+}
+
 interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+  excludePatterns?: string[];
+}
+
+function normalizeExcludePattern(pattern: string): string | null {
+  const trimmed = pattern.trim().replace(/^\/+/, '');
+  if (!trimmed) return null;
+
+  const normalized = path.posix.normalize(trimmed);
+  if (
+    normalized === '.' ||
+    normalized.startsWith('../') ||
+    normalized.includes('/../')
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function getTmpfsOverlayPaths(mount: VolumeMount): string[] {
+  if (!mount.excludePatterns || mount.excludePatterns.length === 0) return [];
+
+  const overlays = new Set<string>();
+  for (const rawPattern of mount.excludePatterns) {
+    const pattern = normalizeExcludePattern(rawPattern);
+    if (!pattern) continue;
+    // Docker cannot create tmpfs mountpoints on top of a read-only bind mount
+    // when the target path does not already exist. Skip absent paths.
+    const hostOverlayPath = path.join(mount.hostPath, pattern);
+    if (!fs.existsSync(hostOverlayPath)) continue;
+    overlays.add(path.posix.join(mount.containerPath, pattern));
+  }
+  return [...overlays];
 }
 
 function buildVolumeMounts(
@@ -85,16 +139,16 @@ function buildVolumeMounts(
       readonly: false,
     });
 
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
-    }
+  }
+
+  // Shared global CLAUDE.md context for all agents.
+  const globalDir = path.join(GROUPS_DIR, 'global');
+  if (fs.existsSync(globalDir)) {
+    mounts.push({
+      hostPath: globalDir,
+      containerPath: '/workspace/global',
+      readonly: true,
+    });
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
@@ -181,9 +235,18 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'responses'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
+    readonly: false,
+  });
+
+  // SecondBrain shared knowledge base (read-write for all agents)
+  fs.mkdirSync(path.join(SECONDBRAIN_DIR, 'inbox'), { recursive: true });
+  mounts.push({
+    hostPath: SECONDBRAIN_DIR,
+    containerPath: '/workspace/secondbrain',
     readonly: false,
   });
 
@@ -192,8 +255,9 @@ function buildVolumeMounts(
   // groups. Recompiled on container startup via entrypoint.sh.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', group.folder, 'agent-runner-src');
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
+    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true, force: true });
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -226,6 +290,8 @@ function buildContainerArgs(
   group: RegisteredGroup,
   mounts: VolumeMount[],
   containerName: string,
+  commandArgs?: string[],
+  entrypoint?: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -241,6 +307,14 @@ function buildContainerArgs(
   }
   if (extraEnv.GITHUB_TOKEN) {
     args.push('-e', `GITHUB_TOKEN=${extraEnv.GITHUB_TOKEN}`);
+  }
+
+  // Per-group environment variables (e.g., GITHUB_REPO, SLACK_CHANNEL_ID for PM agents).
+  // These are injected directly — do not put secrets here; use .env for secrets.
+  if (group.containerConfig?.envVars) {
+    for (const [key, value] of Object.entries(group.containerConfig.envVars)) {
+      args.push('-e', `${key}=${value}`);
+    }
   }
 
   // Run as host user so bind-mounted files are accessible.
@@ -261,7 +335,20 @@ function buildContainerArgs(
     }
   }
 
+  for (const mount of mounts) {
+    for (const overlayPath of getTmpfsOverlayPaths(mount)) {
+      args.push('--tmpfs', overlayPath);
+    }
+  }
+
+  if (entrypoint) {
+    args.push('--entrypoint', entrypoint);
+  }
+
   args.push(CONTAINER_IMAGE);
+  if (commandArgs && commandArgs.length > 0) {
+    args.push(...commandArgs);
+  }
 
   return args;
 }
@@ -635,6 +722,372 @@ export async function runContainerAgent(
   });
 }
 
+const SNIPPET_RUNNER_SCRIPT = [
+  '#!/usr/bin/env node',
+  "'use strict';",
+  "const fs = require('fs');",
+  '',
+  'function emit(payload) {',
+  "  process.stdout.write(JSON.stringify(payload) + '\\n');",
+  '}',
+  '',
+  'function toJsonSafe(value) {',
+  '  try { JSON.stringify(value); return value; }',
+  '  catch { return String(value); }',
+  '}',
+  '',
+  'function main() {',
+  '  const args = process.argv.slice(2);',
+  '  let snippetPath, contextPath;',
+  '  for (let i = 0; i < args.length; i++) {',
+  "    if (args[i] === '--snippet') snippetPath = args[i + 1];",
+  "    if (args[i] === '--context') contextPath = args[i + 1];",
+  '  }',
+  '  if (!snippetPath || !contextPath) {',
+  "    emit({ ok: false, error: 'Missing --snippet or --context argument' });",
+  '    process.exit(1);',
+  '  }',
+  '',
+  '  try {',
+  "    const context = JSON.parse(fs.readFileSync(contextPath, 'utf-8'));",
+  "    const snippet = fs.readFileSync(snippetPath, 'utf-8').trim();",
+  '    if (!snippet) {',
+  '      emit({ ok: true, should_run: false, payload: false });',
+  '      return;',
+  '    }',
+  '',
+  "    const fn = new Function('context', 'require',",
+  "      'return (async () => { ' + snippet + ' })();'",
+  '    );',
+  '    Promise.resolve(fn(context, require)).then((result) => {',
+  '      const shouldRun = !(result === false);',
+  '      emit({ ok: true, should_run: shouldRun, payload: toJsonSafe(result) });',
+  '    }).catch((err) => {',
+  "      emit({ ok: false, error: String(err), traceback: err.stack || '' });",
+  '    });',
+  '  } catch (err) {',
+  "    emit({ ok: false, error: String(err), traceback: err.stack || '' });",
+  '  }',
+  '}',
+  '',
+  'main();',
+].join('\n');
+
+interface SnippetRunnerResponse {
+  ok: boolean;
+  should_run?: boolean;
+  payload?: unknown;
+  error?: string;
+  traceback?: string;
+}
+
+// Bash snippet runner — uses Node.js to wrap the bash execution and produce JSON output.
+// This avoids complex shell quoting inside a JS string literal.
+const BASH_SNIPPET_RUNNER_SCRIPT = [
+  '#!/usr/bin/env node',
+  "'use strict';",
+  "const { execSync } = require('child_process');",
+  "const fs = require('fs');",
+  '',
+  'function emit(payload) {',
+  "  process.stdout.write(JSON.stringify(payload) + '\\n');",
+  '}',
+  '',
+  'const snippetPath = process.argv[2];',
+  'const contextPath = process.argv[3];',
+  'if (!snippetPath || !contextPath) {',
+  "  emit({ ok: false, error: 'Missing snippet or context path' });",
+  '  process.exit(1);',
+  '}',
+  '',
+  'try {',
+  "  const env = { ...process.env, NANOCLAW_CONTEXT_FILE: contextPath };",
+  '  let output;',
+  '  try {',
+  "    output = execSync('bash ' + JSON.stringify(snippetPath), {",
+  '      env,',
+  '      encoding: "utf-8",',
+  '      timeout: 40000,',
+  '      stdio: ["pipe", "pipe", "pipe"],',
+  '    }).trim();',
+  '  } catch (err) {',
+  '    const stderr = err.stderr ? err.stderr.toString().slice(-500) : String(err);',
+  "    emit({ ok: false, error: stderr, traceback: '' });",
+  '    process.exit(0);',
+  '  }',
+  '',
+  "  if (output === 'false') {",
+  '    emit({ ok: true, should_run: false, payload: false });',
+  '    process.exit(0);',
+  '  }',
+  '',
+  '  let payload;',
+  '  try { payload = JSON.parse(output); } catch { payload = output; }',
+  '  emit({ ok: true, should_run: true, payload: payload });',
+  '} catch (err) {',
+  "  emit({ ok: false, error: String(err), traceback: err.stack || '' });",
+  '}',
+].join('\n');
+
+function parseSnippetRunnerResponse(stdout: string): SnippetRunnerResponse | null {
+  const lines = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]) as SnippetRunnerResponse;
+      if (parsed && typeof parsed === 'object' && typeof parsed.ok === 'boolean') {
+        return parsed;
+      }
+    } catch {
+      // keep scanning upward for the JSON line
+    }
+  }
+  return null;
+}
+
+function writeSnippetLog(
+  groupDir: string,
+  taskId: string,
+  snippet: string,
+  context: object,
+  stdout: string,
+  stderr: string,
+  error?: string,
+): string {
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const logFile = path.join(logsDir, `snippet-${taskId}-${timestamp}.log`);
+  const lines = [
+    '=== Task Snippet Run ===',
+    `Timestamp: ${new Date().toISOString()}`,
+    `Task ID: ${taskId}`,
+    error ? `Error: ${error}` : '',
+    '',
+    '=== Context ===',
+    JSON.stringify(context, null, 2),
+    '',
+    '=== Snippet ===',
+    snippet,
+    '',
+    '=== Stdout ===',
+    stdout || '(empty)',
+    '',
+    '=== Stderr ===',
+    stderr || '(empty)',
+    '',
+  ].filter(Boolean);
+  fs.writeFileSync(logFile, lines.join('\n'));
+  return logFile;
+}
+
+export async function runTaskSnippet(
+  group: RegisteredGroup,
+  input: TaskSnippetInput,
+): Promise<TaskSnippetOutput> {
+  const lang = input.snippetLanguage || 'javascript';
+  if (lang !== 'javascript' && lang !== 'bash') {
+    return {
+      status: 'error',
+      error: `Unsupported snippet language: ${lang}`,
+    };
+  }
+
+  const groupDir = resolveGroupFolderPath(group.folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  const runtimeHostDir = path.join(groupDir, '.nanoclaw', 'snippet-runtime');
+  fs.mkdirSync(runtimeHostDir, { recursive: true });
+
+  // Write the appropriate runner script
+  const runnerFileName = lang === 'bash' ? 'run_snippet.sh' : 'run_snippet.js';
+  const runnerScript = lang === 'bash' ? BASH_SNIPPET_RUNNER_SCRIPT : SNIPPET_RUNNER_SCRIPT;
+  const runnerHostPath = path.join(runtimeHostDir, runnerFileName);
+  // Always overwrite to pick up runner changes
+  fs.writeFileSync(runnerHostPath, runnerScript, { mode: 0o755 });
+
+  const ext = lang === 'bash' ? '.sh' : '.js';
+  const unique = `${input.taskId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const snippetHostPath = path.join(runtimeHostDir, `${unique}${ext}`);
+  const contextHostPath = path.join(runtimeHostDir, `${unique}.context.json`);
+  const runtimeContainerDir = `/workspace/group/.nanoclaw/snippet-runtime`;
+  const snippetContainerPath = `${runtimeContainerDir}/${unique}${ext}`;
+  const contextContainerPath = `${runtimeContainerDir}/${unique}.context.json`;
+
+  const context = {
+    task_id: input.taskId,
+    group_folder: input.groupFolder,
+    chat_jid: input.chatJid,
+    schedule_type: input.scheduleType,
+    schedule_value: input.scheduleValue,
+    run_started_at: new Date().toISOString(),
+  };
+  fs.writeFileSync(snippetHostPath, input.snippet);
+  fs.writeFileSync(contextHostPath, JSON.stringify(context, null, 2));
+
+  const mounts = buildVolumeMounts(group, input.isMain);
+  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  const containerName = `nanoclaw-snippet-${safeName}-${Date.now()}`;
+
+  const commandArgs = lang === 'bash'
+    ? [
+        `${runtimeContainerDir}/${runnerFileName}`,
+        snippetContainerPath,
+        contextContainerPath,
+      ]
+    : [
+        `${runtimeContainerDir}/${runnerFileName}`,
+        '--snippet',
+        snippetContainerPath,
+        '--context',
+        contextContainerPath,
+      ];
+  const containerArgs = buildContainerArgs(
+    group,
+    mounts,
+    containerName,
+    commandArgs,
+    'node',
+  );
+
+  const timeoutMs = 45_000;
+
+  return new Promise((resolve) => {
+    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    let timedOut = false;
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
+        if (err) {
+          container.kill('SIGKILL');
+        }
+      });
+    }, timeoutMs);
+
+    container.stdout.on('data', (data) => {
+      const chunk = data.toString();
+      if (stdoutTruncated) return;
+      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
+      if (chunk.length > remaining) {
+        stdout += chunk.slice(0, remaining);
+        stdoutTruncated = true;
+      } else {
+        stdout += chunk;
+      }
+    });
+
+    container.stderr.on('data', (data) => {
+      const chunk = data.toString();
+      if (stderrTruncated) return;
+      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
+      if (chunk.length > remaining) {
+        stderr += chunk.slice(0, remaining);
+        stderrTruncated = true;
+      } else {
+        stderr += chunk;
+      }
+    });
+
+    container.on('close', (code) => {
+      clearTimeout(timeout);
+
+      try {
+        fs.unlinkSync(snippetHostPath);
+      } catch {
+        // ignore cleanup errors
+      }
+      try {
+        fs.unlinkSync(contextHostPath);
+      } catch {
+        // ignore cleanup errors
+      }
+
+      if (timedOut) {
+        const error = `Snippet runner timed out after ${timeoutMs}ms`;
+        const logFile = writeSnippetLog(
+          groupDir,
+          input.taskId,
+          input.snippet,
+          context,
+          stdout,
+          stderr,
+          error,
+        );
+        resolve({ status: 'error', error, logFile });
+        return;
+      }
+
+      const parsed = parseSnippetRunnerResponse(stdout);
+      if (!parsed) {
+        const error = `Failed to parse snippet runner output (exit ${code ?? 'unknown'})`;
+        const logFile = writeSnippetLog(
+          groupDir,
+          input.taskId,
+          input.snippet,
+          context,
+          stdout,
+          stderr,
+          error,
+        );
+        resolve({ status: 'error', error, logFile });
+        return;
+      }
+
+      if (!parsed.ok) {
+        const error = parsed.error || 'Snippet execution failed';
+        const logFile = writeSnippetLog(
+          groupDir,
+          input.taskId,
+          input.snippet,
+          context,
+          stdout,
+          stderr,
+          error,
+        );
+        resolve({
+          status: 'error',
+          error,
+          traceback: parsed.traceback,
+          logFile,
+        });
+        return;
+      }
+
+      if (parsed.should_run === false) {
+        resolve({ status: 'skip', payload: false });
+        return;
+      }
+
+      resolve({ status: 'pass', payload: parsed.payload });
+    });
+
+    container.on('error', (err) => {
+      clearTimeout(timeout);
+      const error = `Snippet runner failed to start: ${err.message}`;
+      const logFile = writeSnippetLog(
+        groupDir,
+        input.taskId,
+        input.snippet,
+        context,
+        stdout,
+        stderr,
+        error,
+      );
+      resolve({ status: 'error', error, logFile });
+    });
+  });
+}
+
 export function writeTasksSnapshot(
   groupFolder: string,
   isMain: boolean,
@@ -677,7 +1130,6 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });

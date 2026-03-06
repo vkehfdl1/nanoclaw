@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# list-issues — PM agent helper for listing GitHub issues with filters
+#
+# Usage:
+#   list-issues [--repo OWNER/REPO] [--state STATE] [--label LABEL,...] [--assignee USER] [--limit N] [--json] [--search QUERY]
+#
+# Environment:
+#   GITHUB_REPO  — default repository (owner/repo), overridden by --repo
+#
+# Examples:
+#   list-issues
+#   list-issues --state closed --limit 10
+#   list-issues --label bug --label "help wanted"
+#   list-issues --assignee @me
+#   list-issues --state open --label feature --assignee alice --limit 30
+#   list-issues --json | jq '.[].number'
+#   list-issues --search "auth timeout"
+
+set -euo pipefail
+
+# ── defaults ──────────────────────────────────────────────────────────────────
+REPO="${GITHUB_REPO:-}"
+STATE="open"
+LABELS=()
+ASSIGNEE=""
+LIMIT=25
+OUTPUT_JSON=false
+SEARCH_QUERY=""
+
+# ── arg parsing ───────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)       REPO="$2";        shift 2 ;;
+    --state)      STATE="$2";       shift 2 ;;
+    --label)      LABELS+=("$2");   shift 2 ;;
+    --assignee)   ASSIGNEE="$2";    shift 2 ;;
+    --limit)      LIMIT="$2";       shift 2 ;;
+    --json)       OUTPUT_JSON=true; shift   ;;
+    --search)     SEARCH_QUERY="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,20p' "$0" | sed 's/^# //'
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# ── validate ──────────────────────────────────────────────────────────────────
+if [[ -z "$REPO" ]]; then
+  echo "Error: GITHUB_REPO environment variable is not set and --repo was not given." >&2
+  echo "Set GITHUB_REPO=owner/repo or pass --repo owner/repo" >&2
+  exit 1
+fi
+
+valid_states="open closed all"
+if ! echo "$valid_states" | grep -qw "$STATE"; then
+  echo "Error: --state must be one of: open, closed, all (got: '$STATE')" >&2
+  exit 1
+fi
+
+if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [[ "$LIMIT" -lt 1 ]]; then
+  echo "Error: --limit must be a positive integer (got: '$LIMIT')" >&2
+  exit 1
+fi
+
+# ── build gh command ──────────────────────────────────────────────────────────
+GH_ARGS=(issue list
+  --repo "$REPO"
+  --state "$STATE"
+  --limit "$LIMIT"
+)
+
+for label in "${LABELS[@]}"; do
+  GH_ARGS+=(--label "$label")
+done
+
+if [[ -n "$ASSIGNEE" ]]; then
+  GH_ARGS+=(--assignee "$ASSIGNEE")
+fi
+
+if [[ -n "$SEARCH_QUERY" ]]; then
+  GH_ARGS+=(--search "$SEARCH_QUERY")
+fi
+
+if [[ "$OUTPUT_JSON" == "true" ]]; then
+  GH_ARGS+=(--json "number,title,state,labels,assignees,createdAt,updatedAt,url,body,milestone,author")
+fi
+
+# ── execute ───────────────────────────────────────────────────────────────────
+exec gh "${GH_ARGS[@]}"
