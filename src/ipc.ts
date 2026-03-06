@@ -971,9 +971,7 @@ export async function processTaskIpc(
           'codex',
           [
             'exec',
-            '--full-auto',
-            '--sandbox',
-            'danger-full-access',
+            '--dangerously-bypass-approvals-and-sandbox',
             '--cd',
             auth.repoPath,
             prompt,

@@ -115,7 +115,7 @@ The `buildVolumeMounts()` function in `container-runner.ts` generates both the b
 
 1. **Schema migrations**: Use try/catch ALTER TABLE pattern (see existing migrations in `db.ts` `createSchema()`).
 2. **IPC authorization**: Main group can access everything. Non-main groups restricted to their own folder/JID.
-3. **Codex CLI**: Install `@openai/codex` globally on host. Run with `codex exec --full-auto --sandbox danger-full-access`.
+3. **Codex CLI**: Install `@openai/codex` globally on host. Run with `codex exec --dangerously-bypass-approvals-and-sandbox`.
 4. **Slack API**: Single bot token for all agents. Use `conversations.members` for channel member lists.
 5. **No breaking changes**: Existing Dobby and Todomon agents must continue working unchanged.
 6. **Mount exclusions**: Use `--tmpfs` overlay technique to mask heavy directories. Docker bind mounts don't support native exclusions, so tmpfs on top of a read-only bind mount effectively hides those directories.

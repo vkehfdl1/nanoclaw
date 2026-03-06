@@ -787,7 +787,7 @@ describe('host repo IPC tasks', () => {
     expect(runner).toHaveBeenNthCalledWith(
       2,
       'codex',
-      expect.arrayContaining(['exec', '--full-auto', '--sandbox', 'danger-full-access', '--cd', repoPath]),
+      expect.arrayContaining(['exec', '--dangerously-bypass-approvals-and-sandbox', '--cd', repoPath]),
       expect.any(Object),
     );
 

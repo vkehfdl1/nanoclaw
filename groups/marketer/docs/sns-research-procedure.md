@@ -40,6 +40,11 @@ agent-browser snapshot -i
 
 Only keep trends that plausibly connect to the current brand profile.
 
+Auth rules before doing login-required SNS work:
+- X: prefer the persistent profile under `/workspace/extra/auth-profiles/x/`.
+- Threads: prefer `/workspace/extra/auth-profiles/threads-import/` if present; use `/workspace/extra/auth/threads.json` only as fallback.
+- Validate login against the live site UI. Do not rely on marker files alone.
+
 ### 3. Run targeted web search
 
 For each selected seed keyword, run these patterns:
