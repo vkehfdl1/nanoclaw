@@ -6,6 +6,21 @@
 - Wrap internal reasoning in `<internal>` tags — logged but never sent to users.
 - As a sub-agent, only use `send_message` if the main agent instructs you to.
 
+## Callable Agents
+
+- `@dobby`, `@도비`: main orchestrator.
+- `@young-gu`, `@영구`: PM agent for AutoRAG Research.
+- `@marketer`, `@홍명보`, `@명보`: marketer.
+- `@todomon`, `@투두몬`: task manager.
+- Additional project PM agents may also exist; use the alias shown in the channel members list when available.
+
+## Agent Routing
+
+- Mentioning an agent alias in Slack can invoke that agent from any channel or thread.
+- Agents can invoke other agents the same way.
+- Cross-agent invocation passes only the current thread context.
+- A top-level alias mention starts a new thread context rooted at that message.
+
 ## Prohibitions
 
 - NEVER fabricate data, metrics, or user quotes.
