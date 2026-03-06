@@ -404,7 +404,7 @@ describe('registered_groups multi-channel lookups', () => {
 });
 
 describe('default agent registrations', () => {
-  it('registers 홍명보 and 도비 in the same channel with expected trigger behavior', () => {
+  it('registers 홍명보 in the marketer channel with expected trigger behavior', () => {
     _ensureDefaultAgentRegistrationsForTests();
 
     const channels = getChannelsForAgent('marketer');
@@ -420,12 +420,9 @@ describe('default agent registrations', () => {
     expect(marketer!.requiresTrigger).toBe(false);
     expect(marketer!.role).toBe('marketer');
 
-    // 도비: requires trigger (responds only when @mentioned)
+    // 도비 is no longer auto-registered in the marketer channel.
     const dobby = agentsInChannel.find((g) => g.folder === 'main');
-    expect(dobby).toBeDefined();
-    expect(dobby!.name).toBe('도비');
-    expect(dobby!.requiresTrigger).toBe(true);
-    expect(dobby!.role).toBe('main');
+    expect(dobby).toBeUndefined();
   });
 
   it('stores and retrieves aliases and gateway fields', () => {
@@ -445,9 +442,7 @@ describe('default agent registrations', () => {
     });
 
     const dobby = agentsInChannel.find((g) => g.folder === 'main');
-    expect(dobby).toBeDefined();
-    expect(dobby!.aliases).toEqual(['dobby', '도비']);
-    expect(dobby!.gateway).toEqual({ rules: [{ match: 'self_mention' }] });
+    expect(dobby).toBeUndefined();
   });
 });
 
