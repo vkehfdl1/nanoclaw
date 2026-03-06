@@ -68,9 +68,15 @@ The container buildkit caches the build context aggressively. `--no-cache` alone
 Snippet-gated behavior:
 
 - `snippet_language` is `'javascript'` (default) or `'bash'`.
-- JavaScript snippets run as async function body in Node.js — `return false` to skip silently.
-- Bash snippets run as shell scripts — print `false` to skip silently.
+- JavaScript snippets run as async function body in Node.js — `return false` to skip silently. `require()` and `child_process.execSync` are available.
+- Bash snippets run as shell scripts — print `false` to skip silently. `GITHUB_TOKEN` and other env vars are available.
 - Any non-`false` return/output is injected into the agent prompt as `[SNIPPET_GATE_PAYLOAD]`.
-- `context` object (JS) or `$NANOCLAW_CONTEXT_FILE` (Bash) provides task metadata.
-- If snippet execution errors, host writes an error log and immediately runs an auto-fix agent pass to patch the snippet.
+- `context` object (JS) or `$NANOCLAW_CONTEXT_FILE` (Bash) provides task metadata: `task_id`, `group_folder`, `chat_jid`, `schedule_type`, `schedule_value`, `run_started_at`.
+- Snippets time out after 45 seconds. On error, host writes a log and immediately runs an auto-fix agent pass.
 - Task editing is still handled by cancel + recreate.
+
+Declarative bootstrap:
+
+- Agent groups can declare recurring tasks in `groups/{name}/schedule.json`.
+- Tasks are registered idempotently at startup (DB ID: `bootstrap-{configId}`).
+- Set `enabled: false` to disable without removing. See `src/agent-schedule-bootstrap.ts` for schema.

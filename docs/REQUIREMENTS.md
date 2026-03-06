@@ -117,6 +117,8 @@ A personal Claude assistant accessible via Slack, with minimal custom code.
 - Schedule types: cron expressions, intervals (ms), or one-time (ISO timestamp)
 - From main: can schedule tasks for any group, view/manage all tasks
 - From other groups: can only manage that group's tasks
+- **Snippet gate**: tasks can include a `code_snippet` (JavaScript or Bash) that runs before the agent; `return false` / `print "false"` to skip silently, any other output becomes `[SNIPPET_GATE_PAYLOAD]` in the prompt. Snippets time out after 45 seconds. On error, host auto-invokes a fix agent pass.
+- **Declarative bootstrap**: agent groups can declare recurring tasks in `groups/{name}/schedule.json`. Tasks are registered idempotently at startup (keyed by `bootstrap-{configId}`). Disabled tasks (`enabled: false`) are never registered.
 
 ### Group Management
 - New groups are added explicitly via the main channel
