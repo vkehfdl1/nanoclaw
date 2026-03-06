@@ -13,6 +13,16 @@ interface PendingCustomize {
   file_hashes: Record<string, string>;
 }
 
+function assertDiffTargetIsFile(
+  fullPath: string,
+  relativePath: string,
+  label: 'base' | 'current',
+): void {
+  if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+    throw new Error(`diff error for ${relativePath}: ${label} path is a directory, expected a file`);
+  }
+}
+
 function getPendingPath(): string {
   return path.join(process.cwd(), CUSTOM_DIR, 'pending.yaml');
 }
@@ -89,6 +99,9 @@ export function commitCustomize(): void {
     const basePath = path.join(baseDir, relativePath);
     const currentPath = path.join(cwd, relativePath);
 
+    assertDiffTargetIsFile(basePath, relativePath, 'base');
+    assertDiffTargetIsFile(currentPath, relativePath, 'current');
+
     // Use /dev/null if either side doesn't exist
     const oldPath = fs.existsSync(basePath) ? basePath : '/dev/null';
     const newPath = fs.existsSync(currentPath) ? currentPath : '/dev/null';
@@ -96,6 +109,7 @@ export function commitCustomize(): void {
     try {
       const diff = execFileSync('diff', ['-ruN', oldPath, newPath], {
         encoding: 'utf-8',
+        stdio: 'pipe',
       });
       combinedPatch += diff;
     } catch (err: unknown) {
