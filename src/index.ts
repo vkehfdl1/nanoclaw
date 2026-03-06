@@ -197,7 +197,7 @@ function clearGroupSession(chatJid: string, groupFolder: string, threadTs?: stri
 }
 
 /**
- * Helper to send a message, using thread reply if threadTs is provided.
+ * Helper to send a message, optionally in a thread.
  */
 async function sendToChannel(
   channel: Channel,
@@ -206,11 +206,7 @@ async function sendToChannel(
   agentLabel: string,
   threadTs?: string,
 ): Promise<void> {
-  if (threadTs && channel.sendMessageInThread) {
-    await channel.sendMessageInThread(chatJid, text, threadTs, agentLabel);
-  } else {
-    await channel.sendMessage(chatJid, text, agentLabel);
-  }
+  await channel.sendMessage(chatJid, text, { agentLabel, threadTs });
 }
 
 /**
@@ -737,23 +733,23 @@ async function main(): Promise<void> {
     queue,
     onProcess: (groupKey, proc, containerName, groupFolder) =>
       queue.registerProcess(groupKey, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
+    sendMessage: async (jid, rawText, options) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
         console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text) await channel.sendMessage(jid, text, options);
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: (jid, text, options) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       const outbound = formatOutbound(text);
       if (!outbound) return Promise.resolve();
-      return channel.sendMessage(jid, outbound);
+      return channel.sendMessage(jid, outbound, options);
     },
     sendFile: (jid, filePath, comment) => {
       const channel = findChannel(channels, jid);

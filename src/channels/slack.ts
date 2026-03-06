@@ -7,7 +7,13 @@ import { ASSISTANT_NAME, GROUPS_DIR } from '../config.js';
 import { updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import { formatOutbound } from '../router.js';
-import { Channel, OnInboundMessage, OnChatMetadata, RegisteredGroup } from '../types.js';
+import {
+  Channel,
+  OnInboundMessage,
+  OnChatMetadata,
+  OutboundMessageOptions,
+  RegisteredGroup,
+} from '../types.js';
 
 /**
  * Parse the agent name from a bot message's `*AgentName:*` prefix.
@@ -195,49 +201,38 @@ export class SlackChannel implements Channel {
     await this.syncChannels();
   }
 
-  /**
-   * Send a message to a Slack channel (channel-level, no thread).
-   * For thread replies, use sendMessageInThread().
-   */
-  async sendMessage(jid: string, text: string, agentLabel?: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    options?: OutboundMessageOptions,
+  ): Promise<void> {
     const channelId = jid.replace('slack:', '');
-    const assistantLabel = agentLabel || this.getAssistantLabel(jid);
+    const assistantLabel = options?.agentLabel || this.getAssistantLabel(jid);
     const outbound = formatOutbound(text);
     if (!outbound) return;
 
     try {
-      await this.app.client.chat.postMessage({
+      const payload: {
+        channel: string;
+        text: string;
+        mrkdwn: boolean;
+        thread_ts?: string;
+      } = {
         channel: channelId,
         text: `*${assistantLabel}:* ${outbound}`,
         mrkdwn: true,
-      });
+      };
+      if (options?.threadTs) {
+        payload.thread_ts = options.threadTs;
+      }
+      await this.app.client.chat.postMessage(payload);
       logger.info(
-        { jid, length: outbound.length, inThread: false },
-        'Slack message sent',
-      );
-    } catch (err) {
-      logger.error({ jid, err }, 'Failed to send Slack message');
-    }
-  }
-
-  /**
-   * Send a message as a reply in a specific Slack thread.
-   */
-  async sendMessageInThread(jid: string, text: string, threadTs: string, agentLabel?: string): Promise<void> {
-    const channelId = jid.replace('slack:', '');
-    const assistantLabel = agentLabel || this.getAssistantLabel(jid);
-    const outbound = formatOutbound(text);
-    if (!outbound) return;
-
-    try {
-      await this.app.client.chat.postMessage({
-        channel: channelId,
-        text: `*${assistantLabel}:* ${outbound}`,
-        mrkdwn: true,
-        thread_ts: threadTs,
-      });
-      logger.info(
-        { jid, length: outbound.length, inThread: true, threadTs },
+        {
+          jid,
+          length: outbound.length,
+          inThread: !!options?.threadTs,
+          threadTs: options?.threadTs,
+        },
         'Slack message sent',
       );
     } catch (err) {

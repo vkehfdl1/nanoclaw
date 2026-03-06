@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _ensureDefaultAgentRegistrationsForTests,
   _initTestDatabase,
+  claimDueTasks,
   createTask,
   deleteTask,
   getAgentsByChannel,
@@ -17,6 +18,7 @@ import {
   storeChatMetadata,
   storeMessage,
   updateTask,
+  updateTaskAfterRun,
 } from './db.js';
 
 beforeEach(() => {
@@ -566,6 +568,50 @@ describe('task CRUD', () => {
 
     updateTask('task-2', { status: 'paused' });
     expect(getTaskById('task-2')!.status).toBe('paused');
+  });
+
+  it('claims due tasks only once by marking them running', () => {
+    createTask({
+      id: 'task-claim-1',
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'claim me',
+      schedule_type: 'once',
+      schedule_value: '2024-06-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    const firstClaim = claimDueTasks();
+    expect(firstClaim.map((task) => task.id)).toEqual(['task-claim-1']);
+    expect(getTaskById('task-claim-1')!.status).toBe('running');
+
+    const secondClaim = claimDueTasks();
+    expect(secondClaim).toEqual([]);
+  });
+
+  it('restores recurring running tasks back to active after completion', () => {
+    createTask({
+      id: 'task-claim-2',
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'finish me',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    claimDueTasks();
+    updateTaskAfterRun('task-claim-2', '2024-06-02T00:00:00.000Z', 'done');
+
+    const task = getTaskById('task-claim-2');
+    expect(task?.status).toBe('active');
+    expect(task?.next_run).toBe('2024-06-02T00:00:00.000Z');
   });
 
   it('deletes a task and its run logs', () => {

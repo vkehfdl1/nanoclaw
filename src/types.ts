@@ -106,7 +106,7 @@ export interface ScheduledTask {
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
-  status: 'active' | 'paused' | 'completed';
+  status: 'active' | 'running' | 'paused' | 'completed';
   created_at: string;
 }
 
@@ -119,14 +119,21 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export interface OutboundMessageOptions {
+  threadTs?: string;
+  agentLabel?: string;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string, agentLabel?: string): Promise<void>;
-  /** Send a message as a reply in a specific thread. */
-  sendMessageInThread?(jid: string, text: string, threadTs: string, agentLabel?: string): Promise<void>;
+  sendMessage(
+    jid: string,
+    text: string,
+    options?: OutboundMessageOptions,
+  ): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

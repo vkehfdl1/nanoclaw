@@ -22,10 +22,10 @@ import { readEnvFile } from './env.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { formatOutbound } from './router.js';
-import { RegisteredGroup } from './types.js';
+import { OutboundMessageOptions, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (jid: string, text: string, options?: OutboundMessageOptions) => Promise<void>;
   sendFile: (jid: string, filePath: string, comment?: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
@@ -431,9 +431,16 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 if (authorized) {
                   const outbound = formatOutbound(data.text);
                   if (outbound) {
-                    await deps.sendMessage(data.chatJid, outbound);
+                    await deps.sendMessage(data.chatJid, outbound, {
+                      threadTs: typeof data.threadTs === 'string' ? data.threadTs : undefined,
+                      agentLabel: typeof data.sender === 'string' ? data.sender : undefined,
+                    });
                     logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
+                      {
+                        chatJid: data.chatJid,
+                        sourceGroup,
+                        threadTs: typeof data.threadTs === 'string' ? data.threadTs : undefined,
+                      },
                       'IPC message sent',
                     );
                   } else {

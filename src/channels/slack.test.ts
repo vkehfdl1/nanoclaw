@@ -278,11 +278,13 @@ describe('SlackChannel', () => {
       expect(call.text).toMatch(/^\*Test Channel:\*/);
     });
 
-    it('sendMessageInThread always uses the provided thread_ts', async () => {
+    it('uses the provided thread_ts when replying in a thread', async () => {
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
-      await channel.sendMessageInThread(REGISTERED_JID, 'Thread reply', '1700000050.000001');
+      await channel.sendMessage(REGISTERED_JID, 'Thread reply', {
+        threadTs: '1700000050.000001',
+      });
 
       expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -314,13 +316,15 @@ describe('SlackChannel', () => {
       await expect(channel.sendMessage(REGISTERED_JID, 'Test')).resolves.toBeUndefined();
     });
 
-    it('logs inThread=true when posting via sendMessageInThread', async () => {
+    it('logs inThread=true when posting with threadTs', async () => {
       const { logger } = await import('../logger.js');
       const channel = new SlackChannel(createTestOpts());
       await connectChannel(channel);
 
       vi.mocked(logger.info).mockClear();
-      await channel.sendMessageInThread(REGISTERED_JID, 'Reply', '1700000010.000001');
+      await channel.sendMessage(REGISTERED_JID, 'Reply', {
+        threadTs: '1700000010.000001',
+      });
 
       expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
         expect.objectContaining({ inThread: true }),
@@ -342,23 +346,22 @@ describe('SlackChannel', () => {
     });
   });
 
-  // --- sendMessageInThread ---
+  it('uses the provided agentLabel when supplied', async () => {
+    const channel = new SlackChannel(createTestOpts());
+    await connectChannel(channel);
 
-  describe('sendMessageInThread', () => {
-    it('posts to the specified thread', async () => {
-      const channel = new SlackChannel(createTestOpts());
-      await connectChannel(channel);
-
-      await channel.sendMessageInThread(REGISTERED_JID, 'Thread reply', '1700000050.000001', 'TestAgent');
-
-      expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: CHANNEL_ID,
-          thread_ts: '1700000050.000001',
-          text: expect.stringContaining('TestAgent'),
-        }),
-      );
+    await channel.sendMessage(REGISTERED_JID, 'Thread reply', {
+      threadTs: '1700000050.000001',
+      agentLabel: 'TestAgent',
     });
+
+    expect(fakeClient.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: CHANNEL_ID,
+        thread_ts: '1700000050.000001',
+        text: expect.stringContaining('TestAgent'),
+      }),
+    );
   });
 
   // --- Message filtering ---

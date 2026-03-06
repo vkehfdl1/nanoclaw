@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SCHEDULER_POLL_INTERVAL } from './config.js';
 import {
   _initTestDatabase,
   createTask,
@@ -64,6 +65,38 @@ describe('task scheduler', () => {
 
     const task = getTaskById('task-invalid-folder');
     expect(task?.status).toBe('paused');
+  });
+
+  it('does not enqueue the same due task again while it is already running', async () => {
+    createTask({
+      id: 'task-running-claim',
+      group_folder: 'marketer',
+      chat_jid: 'slack:C111',
+      prompt: 'run once',
+      schedule_type: 'once',
+      schedule_value: '2026-02-22T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    const enqueueTask = vi.fn();
+
+    startSchedulerLoop({
+      registeredGroups: () => ({ 'slack:C111': MARKETER_GROUP }),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    expect(enqueueTask).toHaveBeenCalledTimes(1);
+    expect(getTaskById('task-running-claim')?.status).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(SCHEDULER_POLL_INTERVAL + 10);
+    expect(enqueueTask).toHaveBeenCalledTimes(1);
+    expect(getTaskById('task-running-claim')?.status).toBe('running');
   });
 
   it('skips task silently when code snippet returns false', async () => {
@@ -176,7 +209,11 @@ describe('task scheduler', () => {
     expect(runSnippet).toHaveBeenCalledTimes(2);
     expect(runAgent).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith('slack:C111', 'Task completed.');
+    expect(sendMessage).toHaveBeenCalledWith(
+      'slack:C111',
+      'Task completed.',
+      { agentLabel: 'Marketer' },
+    );
 
     const updated = getTaskById('task-snippet-autofix');
     expect(updated?.code_snippet).toContain('return {count: 2');

@@ -16,9 +16,9 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  claimDueTasks,
   getAgentsByChannel,
   getAllTasks,
-  getDueTasks,
   getSession,
   getTaskById,
   logTaskRun,
@@ -28,13 +28,13 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { OutboundMessageOptions, RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   queue: GroupQueue;
   onProcess: (groupKey: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (jid: string, text: string, options?: OutboundMessageOptions) => Promise<void>;
   runAgent?: typeof runContainerAgent;
   runSnippet?: typeof runTaskSnippet;
 }
@@ -196,6 +196,7 @@ async function runTask(
   const group = groupFromChat ?? groupFromMemory;
 
   if (!group) {
+    updateTask(task.id, { status: 'paused' });
     logger.error(
       {
         taskId: task.id,
@@ -426,8 +427,10 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(currentTask.chat_jid, streamedOutput.result);
+          // Scheduled tasks always publish a new top-level channel message.
+          await deps.sendMessage(currentTask.chat_jid, streamedOutput.result, {
+            agentLabel: group.name,
+          });
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -444,7 +447,7 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Messages are sent via MCP tool (IPC), result text is just logged
+      // Final delivery already happened in the streaming callback.
       result = output.result;
     }
 
@@ -473,15 +476,14 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
   const loop = async () => {
     try {
-      const dueTasks = getDueTasks();
-      if (dueTasks.length > 0) {
-        logger.info({ count: dueTasks.length }, 'Found due tasks');
+      const claimedTasks = claimDueTasks();
+      if (claimedTasks.length > 0) {
+        logger.info({ count: claimedTasks.length }, 'Claimed due tasks');
       }
 
-      for (const task of dueTasks) {
-        // Re-check task status in case it was paused/cancelled
+      for (const task of claimedTasks) {
         const currentTask = getTaskById(task.id);
-        if (!currentTask || currentTask.status !== 'active') {
+        if (!currentTask || currentTask.status !== 'running') {
           continue;
         }
 
