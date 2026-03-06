@@ -29,7 +29,7 @@ function buildIssueWorkflowInstructions(repoAlias: string): string {
    - craft a Codex implementation prompt with issue title/body, acceptance criteria, reviewed file paths/snippets, project conventions, validation commands, and explicit instructions to commit, push, and open a PR with \`Closes #<number>\`
    - codex_exec(repo="${repoAlias}", branch="<branch>", prompt="<prompt>")`,
     '9. If Codex fails or times out, post gh_issue_comment with failure details and "Tag: human-attention-needed".',
-    '10. Send one concise Slack update only if there is an actionable outcome to report.',
+    '10. If and only if there is an actionable outcome to report, call send_message exactly once with a concise Slack update.',
   ].join('\n');
 }
 
@@ -43,7 +43,7 @@ function buildIssueCommentWorkflowInstructions(repoAlias: string): string {
     '5. If the issue is still not ready, post one narrower follow-up question via gh_issue_comment and stop.',
     '6. If the issue is now ready and no linked PR blocks it, run the standard implementation workflow.',
     '7. If a linked OPEN or MERGED PR now covers the issue, acknowledge that and stop without implementing.',
-    '8. Send one concise Slack update only if something actionable changed.',
+    '8. If and only if something actionable changed, call send_message exactly once with a concise Slack update.',
   ].join('\n');
 }
 
@@ -68,7 +68,7 @@ function buildPrWorkflowInstructions(repoAlias: string): string {
     `6. Run codex_exec(repo="${repoAlias}", branch="<current pr branch or empty if unknown>", prompt="<review prompt>").`,
     `7. Submit the final GitHub review with gh_pr_review(repo="${repoAlias}", pr_number=<pr number>, review_event=<approve|comment|request-changes>, body="<review body>").`,
     '8. Never auto-merge.',
-    '9. Send one concise Slack update with the verdict and behavior validation summary.',
+    '9. Call send_message exactly once with the verdict and behavior validation summary.',
   ].join('\n');
 }
 

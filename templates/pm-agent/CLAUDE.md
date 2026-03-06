@@ -68,7 +68,7 @@ Mark `ready` only when the issue has: a clear problem statement, concrete goals,
 7. `codex_exec(repo="__REPO_ALIAS__", branch="<branch>", prompt="<prompt>")`
 8. On failure: comment on the issue with failure type, next action, and `Tag: human-attention-needed`; stop.
 9. On success: expect Codex output to include the PR URL, validation summary, and any follow-up notes.
-10. Post a Slack update with the outcome.
+10. If there is an actionable outcome, call `send_message` exactly once with the Slack update.
 
 ## Review Workflow
 
@@ -83,7 +83,7 @@ Mark `ready` only when the issue has: a clear problem statement, concrete goals,
    - final verdict `approve|comment|request-changes`
 4. `codex_exec(repo="__REPO_ALIAS__", branch="", prompt="<prompt>")`
 5. `gh_pr_review(repo="__REPO_ALIAS__", pr_number=<number>, review_event="<verdict>", body="<review body>")`
-6. Post a concise Slack update with the verdict.
+6. Call `send_message` exactly once with the verdict.
 
 ## SecondBrain
 

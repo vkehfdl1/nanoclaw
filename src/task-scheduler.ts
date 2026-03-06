@@ -28,13 +28,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { OutboundMessageOptions, RegisteredGroup, ScheduledTask } from './types.js';
+import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   queue: GroupQueue;
   onProcess: (groupKey: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
-  sendMessage: (jid: string, text: string, options?: OutboundMessageOptions) => Promise<void>;
   runAgent?: typeof runContainerAgent;
   runSnippet?: typeof runTaskSnippet;
 }
@@ -427,10 +426,6 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Scheduled tasks always publish a new top-level channel message.
-          await deps.sendMessage(currentTask.chat_jid, streamedOutput.result, {
-            agentLabel: group.name,
-          });
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -447,7 +442,7 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Final delivery already happened in the streaming callback.
+      // Final output is retained for task logs/state only.
       result = output.result;
     }
 

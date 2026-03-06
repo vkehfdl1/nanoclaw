@@ -155,15 +155,10 @@ describe('enqueueGithubEvent', () => {
 
     await queuedRun;
 
-    expect(sentMessages).toEqual([
-      {
-        jid: 'slack:C123',
-        text: 'Handled GitHub issue #42',
-        agentLabel: '영구',
-      },
-    ]);
+    expect(sentMessages).toEqual([]);
     expect(getSession('pm-test', 'slack:C123', 'github:issue:owner/repo#42')).toBe('session-123');
     expect(getGithubEventRun(runId)?.status).toBe('success');
+    expect(getGithubEventRun(runId)?.result).toBe('Handled GitHub issue #42');
     expect(getGithubWebhookDelivery('delivery-1')?.status).toBe('processed');
 
     const seenPath = path.join(mocks.tmpGroupsDir, 'pm-test', 'seen_issues.json');

@@ -105,7 +105,6 @@ async function runGithubEvent(
   const sessionId = getSession(group.folder, event.chatJid, sessionKey);
   let result: string | null = null;
   let error: string | null = null;
-  let outputSent = false;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
   const EVENT_CLOSE_DELAY_MS = 10_000;
 
@@ -139,10 +138,6 @@ async function runGithubEvent(
         persistSession(streamedOutput);
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          await deps.sendMessage(event.chatJid, streamedOutput.result, {
-            agentLabel: group.name,
-          });
-          outputSent = true;
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -178,7 +173,7 @@ async function runGithubEvent(
       error,
     });
 
-    if (!outputSent) {
+    if (!result) {
       await deps.sendMessage(
         event.chatJid,
         `GitHub event processing failed for ${summarizeEvent(event)}: ${error}`,

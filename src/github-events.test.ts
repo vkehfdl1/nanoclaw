@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestDatabase, setRegisteredGroup } from './db.js';
+import { appendGithubEventMarker } from './github-event-markers.js';
 import { normalizeGithubEvent } from './github-events.js';
 import { RegisteredGroup } from './types.js';
 
@@ -75,6 +76,23 @@ describe('normalizeGithubEvent', () => {
 
     expect(result.event).toBeUndefined();
     expect(result.ignoreReason).toContain('bot-authored');
+  });
+
+  it('ignores NanoClaw-authored issue comments even when the sender looks human', () => {
+    const result = normalizeGithubEvent(
+      'issue_comment',
+      {
+        ...makeBasePayload(),
+        action: 'created',
+        sender: { login: 'vkehfdl1', type: 'User' },
+        issue: { number: 42, title: 'Bug', body: 'Broken' },
+        comment: { body: appendGithubEventMarker('Automated PM triage comment') },
+      },
+      'delivery-2b',
+    );
+
+    expect(result.event).toBeUndefined();
+    expect(result.ignoreReason).toContain('NanoClaw-authored');
   });
 
   it('routes issue_comment on a PR into the PR resource flow', () => {

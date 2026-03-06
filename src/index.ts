@@ -801,15 +801,6 @@ async function main(): Promise<void> {
     queue,
     onProcess: (groupKey, proc, containerName, groupFolder) =>
       queue.registerProcess(groupKey, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText, options) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
-        return;
-      }
-      const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text, options);
-    },
   });
   startIpcWatcher({
     sendMessage: (jid, text, options) => {

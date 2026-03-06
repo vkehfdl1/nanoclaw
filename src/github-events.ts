@@ -1,4 +1,5 @@
 import { findPmAgentByGithubRepo } from './db.js';
+import { hasGithubEventMarker } from './github-event-markers.js';
 import { GithubNormalizedActor, GithubNormalizedEvent } from './types.js';
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -125,6 +126,9 @@ export function normalizeGithubEvent(
     if (!isObject(issue) || !isObject(comment)) {
       return { ignoreReason: 'Missing issue comment payload' };
     }
+    if (hasGithubEventMarker(comment.body)) {
+      return { ignoreReason: 'Ignoring NanoClaw-authored issue comment event' };
+    }
     const actor = readActor(payloadRaw.sender);
     if (actor.isBot) {
       return { ignoreReason: 'Ignoring bot-authored issue comment event' };
@@ -200,6 +204,9 @@ export function normalizeGithubEvent(
     if (!isObject(review) || !isObject(pullRequest)) {
       return { ignoreReason: 'Missing PR review payload' };
     }
+    if (hasGithubEventMarker(review.body)) {
+      return { ignoreReason: 'Ignoring NanoClaw-authored pull request review event' };
+    }
     const actor = readActor(payloadRaw.sender);
     if (actor.isBot) {
       return { ignoreReason: 'Ignoring bot-authored pull request review event' };
@@ -229,6 +236,10 @@ export function normalizeGithubEvent(
   if (eventNameRaw === 'pull_request_review_comment') {
     if (action !== 'created') {
       return { ignoreReason: `Unsupported pull_request_review_comment action: ${action}` };
+    }
+    const comment = payloadRaw.comment;
+    if (isObject(comment) && hasGithubEventMarker(comment.body)) {
+      return { ignoreReason: 'Ignoring NanoClaw-authored pull request review comment event' };
     }
     const pullRequest = payloadRaw.pull_request;
     if (!isObject(pullRequest)) {

@@ -19,6 +19,7 @@ import {
   updateTask,
 } from './db.js';
 import { readEnvFile } from './env.js';
+import { appendGithubEventMarker } from './github-event-markers.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { formatOutbound } from './router.js';
@@ -1209,9 +1210,10 @@ export async function processTaskIpc(
       }
 
       try {
+        const finalBody = appendGithubEventMarker(body);
         const result = await runCommand(
           'gh',
-          ['issue', 'comment', String(issueNumber), '--body', body],
+          ['issue', 'comment', String(issueNumber), '--body', finalBody],
           { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
         );
         writeTaskResponse(sourceGroup, requestId, {
@@ -1376,9 +1378,10 @@ export async function processTaskIpc(
         : `--${reviewEventRaw}`;
 
       try {
+        const finalBody = appendGithubEventMarker(body);
         const result = await runCommand(
           'gh',
-          ['pr', 'review', String(prNumber), reviewFlag, '--body', body],
+          ['pr', 'review', String(prNumber), reviewFlag, '--body', finalBody],
           { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
         );
         writeTaskResponse(sourceGroup, requestId, {

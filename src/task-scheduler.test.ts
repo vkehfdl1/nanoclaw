@@ -58,7 +58,6 @@ describe('task scheduler', () => {
       registeredGroups: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
-      sendMessage: async () => {},
     });
 
     await vi.advanceTimersByTimeAsync(10);
@@ -87,7 +86,6 @@ describe('task scheduler', () => {
       registeredGroups: () => ({ 'slack:C111': MARKETER_GROUP }),
       queue: { enqueueTask } as any,
       onProcess: () => {},
-      sendMessage: async () => {},
     });
 
     await vi.advanceTimersByTimeAsync(10);
@@ -130,7 +128,6 @@ describe('task scheduler', () => {
       registeredGroups: () => ({ 'slack:C111': MARKETER_GROUP }),
       queue: { closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
-      sendMessage,
       runAgent,
       runSnippet,
     });
@@ -201,23 +198,18 @@ describe('task scheduler', () => {
       registeredGroups: () => ({ 'slack:C111': MARKETER_GROUP }),
       queue: { closeStdin: vi.fn(), notifyIdle: vi.fn() } as any,
       onProcess: () => {},
-      sendMessage,
       runAgent,
       runSnippet,
     });
 
     expect(runSnippet).toHaveBeenCalledTimes(2);
     expect(runAgent).toHaveBeenCalledTimes(2);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      'slack:C111',
-      'Task completed.',
-      { agentLabel: 'Marketer' },
-    );
+    expect(sendMessage).not.toHaveBeenCalled();
 
     const updated = getTaskById('task-snippet-autofix');
     expect(updated?.code_snippet).toContain('return {count: 2');
     expect(updated?.status).toBe('completed');
+    expect(updated?.last_result).toContain('Task completed.');
 
     const secondRunPrompt = runAgent.mock.calls[1]?.[1]?.prompt as string;
     expect(secondRunPrompt).toContain('[SNIPPET_GATE_PAYLOAD]');
