@@ -40,7 +40,7 @@ export interface IpcDeps {
 }
 
 let ipcWatcherRunning = false;
-const CODEX_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
+const CODEX_EXEC_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const HOST_OP_TIMEOUT_MS = 30 * 1000;
 const HOST_CMD_MAX_BUFFER = 10 * 1024 * 1024;
 const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;

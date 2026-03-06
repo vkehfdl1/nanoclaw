@@ -1,6 +1,6 @@
 # Add Parallel AI Integration
 
-Adds Parallel AI MCP integration to NanoClaw for advanced web research capabilities.
+Adds Parallel AI MCP integration to NanoClaw for advanced web research capabilities in Slack-first NanoClaw deployments.
 
 ## What This Adds
 
@@ -12,7 +12,7 @@ Adds Parallel AI MCP integration to NanoClaw for advanced web research capabilit
 
 User must have:
 1. Parallel AI API key from https://platform.parallel.ai
-2. NanoClaw already set up and running
+2. NanoClaw already set up and connected to Slack
 3. Docker installed and running
 
 ## Implementation Steps
@@ -212,6 +212,10 @@ AskUserQuestion: I can do deep research on [topic] using Parallel's Task API. Th
 - User explicitly asks to "research" or "explain in depth"
 
 **Default behavior:** Prefer search for most questions. Only suggest deep research when the topic genuinely requires comprehensive analysis.
+
+When demonstrating usage to the user, prefer Slack examples such as:
+- `@Andy quick Parallel search for Anthropic news this week`
+- `@Andy do deep research on MCP adoption patterns`
 ```
 
 ### 6. Rebuild Container

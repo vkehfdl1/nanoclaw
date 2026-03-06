@@ -1,6 +1,6 @@
 ---
 name: customize
-description: Add new capabilities or modify NanoClaw behavior. Use when user wants to add channels (Telegram, Slack, email input), change triggers, add integrations, modify the router, or make any other customizations. This is an interactive skill that asks questions to understand what the user wants.
+description: Add new capabilities or modify NanoClaw behavior. Use when the user wants to change Slack behavior, add secondary channels, change triggers, add integrations, or modify the router. This is an interactive skill that asks questions to understand what the user wants.
 ---
 
 # NanoClaw Customization
@@ -19,27 +19,27 @@ This skill helps users add capabilities or modify behavior. Use AskUserQuestion 
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | Orchestrator: state, message loop, agent invocation |
-| `src/channels/whatsapp.ts` | WhatsApp connection, auth, send/receive |
+| `src/channels/slack.ts` | Slack Socket Mode connection, file handling, send/receive |
 | `src/ipc.ts` | IPC watcher and task processing |
 | `src/router.ts` | Message formatting and outbound routing |
 | `src/types.ts` | TypeScript interfaces (includes Channel) |
 | `src/config.ts` | Assistant name, trigger pattern, directories |
 | `src/db.ts` | Database initialization and queries |
-| `src/whatsapp-auth.ts` | Standalone WhatsApp authentication script |
+| `docs/pm-agent-slack-setup.md` | Slack app scopes, tokens, and setup reference |
 | `groups/CLAUDE.md` | Global memory/persona |
 
 ## Common Customization Patterns
 
-### Adding a New Input Channel (e.g., Telegram, Slack, Email)
+### Adding a New Input Channel (e.g., Email, Discord, SMS)
 
 Questions to ask:
-- Which channel? (Telegram, Slack, Discord, email, SMS, etc.)
+- Which channel? (email, Discord, SMS, or another secondary transport)
 - Same trigger word or different?
 - Same memory hierarchy or separate?
 - Should messages from this channel go to existing groups or new ones?
 
 Implementation pattern:
-1. Create `src/channels/{name}.ts` implementing the `Channel` interface from `src/types.ts` (see `src/channels/whatsapp.ts` for reference)
+1. Create `src/channels/{name}.ts` implementing the `Channel` interface from `src/types.ts` (see `src/channels/slack.ts` for reference)
 2. Add the channel instance to `main()` in `src/index.ts` and wire callbacks (`onMessage`, `onChatMetadata`)
 3. Messages are stored via the `onMessage` callback; routing is automatic via `ownsJid()`
 
@@ -101,10 +101,9 @@ launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 
 ## Example Interaction
 
-User: "Add Telegram as an input channel"
+User: "Adjust Slack thread handling so only replies stay in the active thread"
 
-1. Ask: "Should Telegram use the same @Andy trigger, or a different one?"
-2. Ask: "Should Telegram messages create separate conversation contexts, or share with WhatsApp groups?"
-3. Create `src/channels/telegram.ts` implementing the `Channel` interface (see `src/channels/whatsapp.ts`)
-4. Add the channel to `main()` in `src/index.ts`
-5. Tell user how to authenticate and test
+1. Ask: "Should this apply in every registered Slack channel or only the main channel?"
+2. Ask: "Should top-level replies always open a thread, or only when the user started one?"
+3. Update `src/channels/slack.ts` and the matching cases in `src/channels/slack.test.ts`
+4. Tell user how to verify in Slack

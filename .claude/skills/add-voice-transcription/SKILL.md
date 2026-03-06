@@ -1,11 +1,11 @@
 ---
 name: add-voice-transcription
-description: Add voice message transcription to NanoClaw using OpenAI's Whisper API. Automatically transcribes WhatsApp voice notes so the agent can read and respond to them.
+description: Add voice message transcription to NanoClaw using OpenAI's Whisper API. Automatically transcribes Slack audio attachments so the agent can read and respond to them.
 ---
 
 # Add Voice Transcription
 
-This skill adds automatic voice message transcription to NanoClaw's WhatsApp channel using OpenAI's Whisper API. When a voice note arrives, it is downloaded, transcribed, and delivered to the agent as `[Voice: <transcript>]`.
+This skill adds automatic voice message transcription to NanoClaw's Slack channel using OpenAI's Whisper API. When an audio attachment arrives, the file is downloaded, transcribed, and appended to the message as `[Voice: <transcript>]`.
 
 ## Phase 1: Pre-flight
 
@@ -30,7 +30,7 @@ Run the skills engine to apply this skill's code package.
 If `.nanoclaw/` directory doesn't exist yet:
 
 ```bash
-npx tsx scripts/apply-skill.ts --init
+npx tsx -e "import { initNanoclawDir } from './skills-engine/init.js'; initNanoclawDir();"
 ```
 
 ### Apply the skill
@@ -41,15 +41,15 @@ npx tsx scripts/apply-skill.ts .claude/skills/add-voice-transcription
 
 This deterministically:
 - Adds `src/transcription.ts` (voice transcription module using OpenAI Whisper)
-- Three-way merges voice handling into `src/channels/whatsapp.ts` (isVoiceMessage check, transcribeAudioMessage call)
-- Three-way merges transcription tests into `src/channels/whatsapp.test.ts` (mock + 3 test cases)
+- Three-way merges audio transcription handling into `src/channels/slack.ts`
+- Three-way merges Slack audio transcription tests into `src/channels/slack.test.ts`
 - Installs the `openai` npm dependency
 - Updates `.env.example` with `OPENAI_API_KEY`
 - Records the application in `.nanoclaw/state.yaml`
 
 If the apply reports merge conflicts, read the intent files:
-- `modify/src/channels/whatsapp.ts.intent.md` — what changed and invariants for whatsapp.ts
-- `modify/src/channels/whatsapp.test.ts.intent.md` — what changed for whatsapp.test.ts
+- `modify/src/channels/slack.ts.intent.md` — what changed and invariants for slack.ts
+- `modify/src/channels/slack.test.ts.intent.md` — what changed for slack.test.ts
 
 ### Validate code changes
 
@@ -58,7 +58,7 @@ npm test
 npm run build
 ```
 
-All tests must pass (including the 3 new voice transcription tests) and build must be clean before proceeding.
+All tests must pass (including the new Slack audio transcription tests) and build must be clean before proceeding.
 
 ## Phase 3: Configure
 
@@ -103,11 +103,11 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # macOS
 
 ## Phase 4: Verify
 
-### Test with a voice note
+### Test with a Slack audio attachment
 
 Tell the user:
 
-> Send a voice note in any registered WhatsApp chat. The agent should receive it as `[Voice: <transcript>]` and respond to its content.
+> Upload a voice memo or audio file in any registered Slack channel. The agent should receive it as `[Voice: <transcript>]` and respond to the transcript.
 
 ### Check logs if needed
 
@@ -116,26 +116,27 @@ tail -f logs/nanoclaw.log | grep -i voice
 ```
 
 Look for:
-- `Transcribed voice message` — successful transcription with character count
+- `Transcribed Slack audio file` — successful transcription with character count
 - `OPENAI_API_KEY not set` — key missing from `.env`
 - `OpenAI transcription failed` — API error (check key validity, billing)
-- `Failed to download audio message` — media download issue
+- `Slack returned HTML instead of file` — missing Slack `files:read` scope
 
 ## Troubleshooting
 
-### Voice notes show "[Voice Message - transcription unavailable]"
+### Audio uploads show "[Voice Message - transcription unavailable]"
 
 1. Check `OPENAI_API_KEY` is set in `.env` AND synced to `data/env/env`
 2. Verify key works: `curl -s https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY" | head -c 200`
 3. Check OpenAI billing — Whisper requires a funded account
+4. Confirm the Slack app has the `files:read` scope and has been reinstalled after adding it
 
-### Voice notes show "[Voice Message - transcription failed]"
+### Audio uploads show "[Voice Message - transcription failed]"
 
 Check logs for the specific error. Common causes:
 - Network timeout — transient, will work on next message
 - Invalid API key — regenerate at https://platform.openai.com/api-keys
 - Rate limiting — wait and retry
 
-### Agent doesn't respond to voice notes
+### Agent doesn't respond to audio uploads
 
-Verify the chat is registered and the agent is running. Voice transcription only runs for registered groups.
+Verify the Slack channel is registered and the agent is running. Audio transcription only runs for registered Slack groups and threads that the bot can read.
