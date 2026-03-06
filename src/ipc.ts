@@ -42,7 +42,7 @@ export interface IpcDeps {
 }
 
 let ipcWatcherRunning = false;
-const CODEX_EXEC_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const CODEX_EXEC_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const HOST_OP_TIMEOUT_MS = 30 * 1000;
 const HOST_CMD_MAX_BUFFER = 10 * 1024 * 1024;
 const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -310,6 +310,16 @@ function getHostCommandErrorDetails(
     }
   }
   return details;
+}
+
+function withRepoPathError(
+  details: { error: string; stdout?: string; stderr?: string; exitCode?: number | null },
+  repoPath: string,
+): { error: string; stdout?: string; stderr?: string; exitCode?: number | null } {
+  return {
+    ...details,
+    error: `${details.error} [repoPath=${repoPath}]`,
+  };
 }
 
 function parseGitHubIssueListOutput(stdout: string): ParsedGitHubIssue[] {
@@ -990,7 +1000,10 @@ export async function processTaskIpc(
           stderr: result.stderr || undefined,
         });
       } catch (err) {
-        const details = getHostCommandErrorDetails(err);
+        const details = withRepoPathError(
+          getHostCommandErrorDetails(err),
+          auth.repoPath,
+        );
         writeTaskResponse(sourceGroup, requestId, {
           ok: false,
           ...details,
@@ -1033,7 +1046,10 @@ export async function processTaskIpc(
           stderr: result.stderr || undefined,
         });
       } catch (err) {
-        const details = getHostCommandErrorDetails(err);
+        const details = withRepoPathError(
+          getHostCommandErrorDetails(err),
+          auth.repoPath,
+        );
         writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
       }
       break;
@@ -1073,7 +1089,10 @@ export async function processTaskIpc(
           stderr: result.stderr || undefined,
         });
       } catch (err) {
-        const details = getHostCommandErrorDetails(err);
+        const details = withRepoPathError(
+          getHostCommandErrorDetails(err),
+          auth.repoPath,
+        );
         writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
       }
       break;
@@ -1121,7 +1140,10 @@ export async function processTaskIpc(
           stderr: result.stderr || undefined,
         });
       } catch (err) {
-        const details = getHostCommandErrorDetails(err);
+        const details = withRepoPathError(
+          getHostCommandErrorDetails(err),
+          auth.repoPath,
+        );
         writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
       }
       break;

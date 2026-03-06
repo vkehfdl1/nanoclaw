@@ -17,7 +17,7 @@ const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
 const IPC_RESPONSE_POLL_MS = 500;
-const CODEX_RESPONSE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const CODEX_RESPONSE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const HOST_OP_RESPONSE_TIMEOUT_MS = 30 * 1000;
 
 // Context from environment variables (set by the agent runner)

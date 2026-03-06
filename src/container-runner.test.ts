@@ -294,6 +294,113 @@ describe('container-runner timeout behavior', () => {
     expect(tmpfsPaths.some((p) => p.includes('../bad'))).toBe(false);
   });
 
+  it('defaults PM agents to claude-opus-4-6 when no explicit model is configured', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => {
+      const p = String(filePath);
+      return p === '/host/repos/autorag-research' ||
+        p === '/host/repos/autorag-research/.git';
+    });
+    vi.mocked(fs.readdirSync).mockImplementation((filePath) => {
+      if (String(filePath) === '/host/repos/autorag-research') {
+        return ['.git', 'README.md'] as unknown as ReturnType<typeof fs.readdirSync>;
+      }
+      return [] as unknown as ReturnType<typeof fs.readdirSync>;
+    });
+    vi.mocked(fs.statSync).mockImplementation((filePath) => {
+      if (String(filePath) === '/host/repos/autorag-research') {
+        return { isDirectory: () => true } as ReturnType<typeof fs.statSync>;
+      }
+      return { isDirectory: () => false } as ReturnType<typeof fs.statSync>;
+    });
+    vi.mocked(validateAdditionalMounts).mockReturnValueOnce([
+      {
+        hostPath: '/host/repos/autorag-research',
+        containerPath: '/workspace/extra/autorag-research',
+        readonly: true,
+      },
+    ]);
+
+    const pmGroup: RegisteredGroup = {
+      ...testGroup,
+      folder: 'pm-sample',
+      role: 'pm-agent',
+      containerConfig: {
+        additionalMounts: [{ hostPath: '/ignored/by/mock' }],
+      },
+    };
+
+    const resultPromise = runContainerAgent(
+      pmGroup,
+      {
+        ...testInput,
+        groupFolder: 'pm-sample',
+      },
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-pm-model',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    expect(spawnArgs).toContain('CLAUDE_MODEL=claude-opus-4-6');
+  });
+
+  it('fails fast when a PM agent repo mount is not a git working tree', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath) === '/host/repos/autorag-research'
+    ));
+    vi.mocked(fs.readdirSync).mockImplementation((filePath) => {
+      if (String(filePath) === '/host/repos/autorag-research') {
+        return ['README.md'] as unknown as ReturnType<typeof fs.readdirSync>;
+      }
+      return [] as unknown as ReturnType<typeof fs.readdirSync>;
+    });
+    vi.mocked(fs.statSync).mockImplementation((filePath) => {
+      if (String(filePath) === '/host/repos/autorag-research') {
+        return { isDirectory: () => true } as ReturnType<typeof fs.statSync>;
+      }
+      return { isDirectory: () => false } as ReturnType<typeof fs.statSync>;
+    });
+    vi.mocked(validateAdditionalMounts).mockReturnValueOnce([
+      {
+        hostPath: '/host/repos/autorag-research',
+        containerPath: '/workspace/extra/autorag-research',
+        readonly: true,
+      },
+    ]);
+
+    const spawnCallsBefore = vi.mocked(spawn).mock.calls.length;
+    const result = await runContainerAgent(
+      {
+        ...testGroup,
+        folder: 'pm-bad',
+        role: 'pm-agent',
+        containerConfig: {
+          additionalMounts: [{ hostPath: '/ignored/by/mock' }],
+        },
+      },
+      {
+        ...testInput,
+        groupFolder: 'pm-bad',
+      },
+      () => {},
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('PM agent codebase validation failed');
+    expect(result.error).toContain('.git marker is missing');
+    expect(vi.mocked(spawn).mock.calls.length).toBe(spawnCallsBefore);
+  });
+
   it('refreshes the per-group agent runner snapshot from the latest source', async () => {
     vi.mocked(fs.existsSync).mockImplementation((filePath) => (
       String(filePath).endsWith('/container/agent-runner/src')

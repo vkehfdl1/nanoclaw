@@ -796,6 +796,35 @@ describe('host repo IPC tasks', () => {
     expect(response.stdout).toBe('codex complete');
   });
 
+  it('includes repoPath in codex_exec host errors', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (command: string) => {
+      if (command === 'git') {
+        throw new Error('fatal: not a git repository');
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'codex_exec',
+        requestId: 'req-codex-error',
+        repo: 'autorag-research',
+        prompt: 'Implement feature X',
+        branch: 'main',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const response = readTaskResponse('req-codex-error');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain(`[repoPath=${repoPath}]`);
+  });
+
   it('git_pull defaults to current branch when none is provided', async () => {
     configureAllowedRepo('autorag-research');
 
@@ -833,6 +862,30 @@ describe('host repo IPC tasks', () => {
     const response = readTaskResponse('req-pull');
     expect(response.ok).toBe(true);
     expect(response.stdout).toContain('Already up to date.');
+  });
+
+  it('includes repoPath in git_pull host errors', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async () => {
+      throw new Error('fatal: not a git repository');
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'git_pull',
+        requestId: 'req-pull-error',
+        repo: 'autorag-research',
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const response = readTaskResponse('req-pull-error');
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain(`[repoPath=${repoPath}]`);
   });
 
   it('gh_issue_list normalizes issues to number/title/body/labels/state', async () => {

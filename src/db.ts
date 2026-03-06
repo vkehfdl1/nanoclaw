@@ -6,6 +6,12 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  getConfiguredPmRepoMounts,
+  getPmAllowedRepoAliases,
+  getPmRepoMountIssues,
+  isPmAgentGroup,
+} from './pm-agent-runtime.js';
+import {
   AgentGateway,
   GithubEventRunRecord,
   GithubEventRunStatus,
@@ -19,11 +25,13 @@ import {
 } from './types.js';
 
 let db: Database.Database;
+const warnedPmRepoMountIssues = new Set<string>();
 
 const MAIN_CHANNEL_JID = 'slack:C0AH91957U0';
 const MAIN_FOLDER = 'main';
 const PM_AUTORAG_CHANNEL_JID = 'slack:C09RELR4R9N';
 const PM_AUTORAG_FOLDER = 'pm-autorag';
+const PM_AUTORAG_TIMEOUT_MS = 130 * 60 * 1000;
 const MARKETER_FOLDER = 'marketer';
 const MARKETER_CHANNEL_JID = 'slack:C0AJ9U1DB25';
 const TODOMON_CHANNEL_JID = 'slack:C0AH3SVQL4C';
@@ -45,6 +53,29 @@ function ensureDefaultRegisteredGroup(
     ...group,
     added_at: existing?.added_at ?? new Date().toISOString(),
   });
+}
+
+function warnIfPmRepoMountMisconfigured(group: RegisteredGroup): void {
+  if (!isPmAgentGroup(group)) return;
+
+  const issues = getPmRepoMountIssues(
+    getConfiguredPmRepoMounts(group),
+    getPmAllowedRepoAliases(group),
+  );
+  for (const issue of issues) {
+    const key = `${group.folder}:${issue.repoAlias}:${issue.hostPath}:${issue.reason}`;
+    if (warnedPmRepoMountIssues.has(key)) continue;
+    warnedPmRepoMountIssues.add(key);
+    logger.warn(
+      {
+        group: group.folder,
+        repoAlias: issue.repoAlias,
+        hostPath: issue.hostPath || null,
+        reason: issue.reason,
+      },
+      'PM agent repo mount is not ready for git/codex operations',
+    );
+  }
 }
 
 function ensureMainRegistration(): void {
@@ -75,6 +106,7 @@ function ensurePmAutoragRegistration(): void {
     role: 'pm-agent',
     containerConfig: {
       model: 'claude-opus-4-6',
+      timeout: PM_AUTORAG_TIMEOUT_MS,
       envVars: {
         GITHUB_REPO: 'NomaDamas/AutoRAG-Research',
         ALLOWED_REPOS: 'autorag-research',
@@ -1290,6 +1322,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       continue;
     }
     const { jid, ...group } = mapped;
+    warnIfPmRepoMountMisconfigured(group);
     result[jid] = group;
   }
   return result;

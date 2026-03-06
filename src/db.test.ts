@@ -467,6 +467,7 @@ describe('default agent registrations', () => {
     const pm = agentsInChannel.find((g) => g.folder === 'pm-autorag');
     expect(pm).toBeDefined();
     expect(pm!.name).toBe('영구');
+    expect(pm!.containerConfig?.timeout).toBe(130 * 60 * 1000);
     expect(pm!.containerConfig?.envVars?.GITHUB_REPO).toBe('NomaDamas/AutoRAG-Research');
     expect(pm!.containerConfig?.additionalMounts?.[0]?.hostPath).toBe('~/Projects/AutoRAG-Research');
   });

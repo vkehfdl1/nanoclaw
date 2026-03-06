@@ -12,7 +12,7 @@
  *     --codebase /path/to/codebase \
  *     [--secondbrain /path/to/secondbrain/inbox] \
  *     [--bot-name "@PM-MyProject"] \
- *     [--model claude-sonnet-4-5]
+ *     [--model claude-opus-4-6]
  *
  * After running this script:
  *   1. The group is registered in the database and will be active on next restart.
@@ -22,12 +22,14 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import {
   DEFAULT_PM_EXCLUDE_PATTERNS,
   deriveRepoAlias,
 } from '../src/pm-agent-config.ts';
+import { DEFAULT_PM_AGENT_MODEL } from '../src/pm-agent-runtime.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -46,7 +48,7 @@ function parseArgs(): {
   codebase: string;
   secondbrain: string | null;
   botName: string;
-  model: string | null;
+  model: string;
 } {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
@@ -68,7 +70,7 @@ function parseArgs(): {
         `  --codebase </path/to/codebase> \\\n` +
         `  [--secondbrain </path/to/secondbrain/inbox>] \\\n` +
         `  [--bot-name "@PM-MyProject"] \\\n` +
-        `  [--model claude-sonnet-4-5]`,
+        `  [--model claude-opus-4-6]`,
     );
     process.exit(1);
   }
@@ -93,6 +95,23 @@ function parseArgs(): {
     console.error(`❌  Codebase path does not exist: ${resolvedCodebase}`);
     process.exit(1);
   }
+  try {
+    const output = execFileSync(
+      'git',
+      ['-C', resolvedCodebase, 'rev-parse', '--is-inside-work-tree'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+    if (output !== 'true') {
+      throw new Error(`unexpected git rev-parse output: ${output}`);
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `❌  Codebase path is not a git working tree: ${resolvedCodebase}\n` +
+        `   Details: ${detail}`,
+    );
+    process.exit(1);
+  }
 
   const secondbrain = get('--secondbrain');
   let resolvedSecondBrain: string | null = null;
@@ -109,7 +128,7 @@ function parseArgs(): {
 
   const safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   const botName = get('--bot-name') || `@PM-${name}`;
-  const model = get('--model');
+  const model = get('--model') || DEFAULT_PM_AGENT_MODEL;
 
   return {
     displayName: name,
@@ -265,7 +284,7 @@ function registerInDatabase(opts: {
   channel: string;
   codebase: string;
   secondbrain: string | null;
-  model: string | null;
+  model: string;
 }): void {
   if (!fs.existsSync(DB_PATH)) {
     console.error(
@@ -302,10 +321,11 @@ function registerInDatabase(opts: {
 
   // Build container config
   const containerConfig: {
-    model?: string;
+    model: string;
     additionalMounts: typeof additionalMounts;
     envVars: Record<string, string>;
   } = {
+    model: opts.model,
     additionalMounts,
     envVars: {
       GITHUB_REPO: opts.repo,
@@ -317,13 +337,22 @@ function registerInDatabase(opts: {
         : {}),
     },
   };
-  if (opts.model) {
-    containerConfig.model = opts.model;
-  }
+  const aliases = JSON.stringify([opts.repoAlias]);
+  const gateway = JSON.stringify({ rules: [{ match: 'self_mention' }] });
 
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role, aliases, gateway)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(jid) DO UPDATE SET
+       name = excluded.name,
+       folder = excluded.folder,
+       trigger_pattern = excluded.trigger_pattern,
+       added_at = excluded.added_at,
+       container_config = excluded.container_config,
+       requires_trigger = excluded.requires_trigger,
+       role = excluded.role,
+       aliases = excluded.aliases,
+       gateway = excluded.gateway`,
   ).run(
     opts.jid,
     opts.name,
@@ -332,6 +361,9 @@ function registerInDatabase(opts: {
     new Date().toISOString(),
     JSON.stringify(containerConfig),
     1, // requiresTrigger = true (only respond to @mentions)
+    'pm-agent',
+    aliases,
+    gateway,
   );
 
   db.close();
@@ -357,6 +389,7 @@ function main(): void {
   console.log(`   Slack channel:  ${opts.channel}  (JID: ${jid})`);
   console.log(`   GitHub repo:    ${opts.repo}`);
   console.log(`   Codebase:       ${opts.codebase}`);
+  console.log(`   Model:          ${opts.model}`);
   if (opts.secondbrain) {
     console.log(`   SecondBrain:    ${opts.secondbrain}`);
   }
@@ -414,6 +447,7 @@ Registered config:
   Trigger:      ${opts.botName}
   GitHub repo:  ${opts.repo}
   Codebase:     ${opts.codebase}
+  Model:        ${opts.model}
 `);
 }
 

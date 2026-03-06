@@ -22,6 +22,13 @@ import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { CONTAINER_RUNTIME_BIN, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import {
+  DEFAULT_PM_AGENT_MODEL,
+  getPmAllowedRepoAliases,
+  getPmRepoMountIssues,
+  getRuntimePmRepoMounts,
+  isPmAgentGroup,
+} from './pm-agent-runtime.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -301,7 +308,8 @@ function buildContainerArgs(
   // Pass model override if configured (per-group takes precedence)
   const extraEnv = readEnvFile(['CLAUDE_MODEL', 'GITHUB_TOKEN']);
   const groupModel = group.containerConfig?.model?.trim();
-  const selectedModel = groupModel || extraEnv.CLAUDE_MODEL;
+  const selectedModel = groupModel
+    || (isPmAgentGroup(group) ? DEFAULT_PM_AGENT_MODEL : extraEnv.CLAUDE_MODEL);
   if (selectedModel) {
     args.push('-e', `CLAUDE_MODEL=${selectedModel}`);
   }
@@ -365,6 +373,29 @@ export async function runContainerAgent(
   fs.mkdirSync(groupDir, { recursive: true });
 
   const mounts = buildVolumeMounts(group, input.isMain);
+  if (isPmAgentGroup(group)) {
+    const pmRepoIssues = getPmRepoMountIssues(
+      getRuntimePmRepoMounts(group, mounts),
+      getPmAllowedRepoAliases(group),
+    );
+    if (pmRepoIssues.length > 0) {
+      const details = pmRepoIssues
+        .map((issue) => (
+          `${issue.repoAlias}: ${issue.reason}${issue.hostPath ? ` (${issue.hostPath})` : ''}`
+        ))
+        .join('; ');
+      logger.error(
+        { group: group.name, folder: group.folder, pmRepoIssues },
+        'PM agent repo mount validation failed',
+      );
+      return {
+        status: 'error',
+        result: null,
+        error: `PM agent codebase validation failed: ${details}`,
+      };
+    }
+  }
+
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(group, mounts, containerName);
