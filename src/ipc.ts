@@ -80,6 +80,15 @@ interface ParsedGitHubIssue {
   state: string;
 }
 
+interface ParsedGitHubLinkedPullRequest {
+  number: number;
+  title: string;
+  state: string;
+  isDraft: boolean;
+  url: string;
+  mergedAt: string | null;
+}
+
 type HostCommandRunner = (
   command: string,
   args: string[],
@@ -352,6 +361,74 @@ function parseGitHubIssueListOutput(stdout: string): ParsedGitHubIssue[] {
       labels,
       state,
     };
+  });
+}
+
+function parseGitHubLinkedPullRequestsOutput(
+  stdout: string,
+  issueNumber: number,
+): ParsedGitHubLinkedPullRequest[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (err) {
+    throw new Error(`Invalid JSON: ${getErrorMessage(err)}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('Expected JSON array from gh pr list');
+  }
+
+  return parsed.flatMap((rawPr, index) => {
+    if (!rawPr || typeof rawPr !== 'object') {
+      throw new Error(`PR ${index + 1} is not an object`);
+    }
+
+    const pr = rawPr as Record<string, unknown>;
+    const rawRefs = pr.closingIssuesReferences;
+    const linkedIssueNumbers = Array.isArray(rawRefs)
+      ? rawRefs.flatMap((rawRef) => {
+        if (!rawRef || typeof rawRef !== 'object') return [];
+        const rawNumber = (rawRef as { number?: unknown }).number;
+        return Number.isInteger(rawNumber) && Number(rawNumber) > 0
+          ? [Number(rawNumber)]
+          : [];
+      })
+      : [];
+
+    if (!linkedIssueNumbers.includes(issueNumber)) {
+      return [];
+    }
+
+    const rawNumber = pr.number;
+    if (!Number.isInteger(rawNumber) || Number(rawNumber) <= 0) {
+      throw new Error(`PR ${index + 1} has invalid number`);
+    }
+
+    const title = typeof pr.title === 'string' ? pr.title.trim() : '';
+    if (!title) {
+      throw new Error(`PR ${index + 1} is missing title`);
+    }
+
+    const rawState = typeof pr.state === 'string' ? pr.state.trim() : '';
+    const state = rawState ? rawState.toUpperCase() : 'OPEN';
+    const url = typeof pr.url === 'string' ? pr.url.trim() : '';
+    if (!url) {
+      throw new Error(`PR ${index + 1} is missing url`);
+    }
+
+    const mergedAt = typeof pr.mergedAt === 'string' && pr.mergedAt.trim()
+      ? pr.mergedAt
+      : null;
+
+    return [{
+      number: Number(rawNumber),
+      title,
+      state,
+      isDraft: Boolean(pr.isDraft),
+      url,
+      mergedAt,
+    }];
   });
 }
 
@@ -1142,6 +1219,69 @@ export async function processTaskIpc(
           stdout: result.stdout,
           stderr: result.stderr || undefined,
         });
+      } catch (err) {
+        const details = getHostCommandErrorDetails(err);
+        writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });
+      }
+      break;
+    }
+
+    case 'gh_issue_linked_prs': {
+      if (!requestId) {
+        logger.warn({ sourceGroup, type: data.type }, 'Missing requestId for IPC task');
+        break;
+      }
+      const auth = authorizeRepoAccess(sourceGroup, data.repo, registeredGroups);
+      if (!auth.ok) {
+        logger.warn(
+          { sourceGroup, repo: data.repo, reason: auth.error },
+          'Unauthorized gh_issue_linked_prs request blocked',
+        );
+        writeTaskResponse(sourceGroup, requestId, { ok: false, error: auth.error });
+        break;
+      }
+
+      const issueNumber =
+        data.issue_number ??
+        data.issueNumber;
+      if (!issueNumber || !Number.isInteger(issueNumber) || issueNumber <= 0) {
+        writeTaskResponse(sourceGroup, requestId, {
+          ok: false,
+          error: 'Missing required field: issue_number (positive integer)',
+        });
+        break;
+      }
+
+      try {
+        const result = await runCommand(
+          'gh',
+          [
+            'pr',
+            'list',
+            '--state',
+            'all',
+            '--limit',
+            '500',
+            '--json',
+            'number,title,state,isDraft,url,mergedAt,closingIssuesReferences',
+          ],
+          { cwd: auth.repoPath, timeoutMs: HOST_OP_TIMEOUT_MS },
+        );
+        try {
+          const linkedPrs = parseGitHubLinkedPullRequestsOutput(result.stdout, issueNumber);
+          writeTaskResponse(sourceGroup, requestId, {
+            ok: true,
+            stdout: JSON.stringify(linkedPrs, null, 2),
+            stderr: result.stderr || undefined,
+          });
+        } catch (parseErr) {
+          writeTaskResponse(sourceGroup, requestId, {
+            ok: false,
+            error: `Failed to parse linked PR list: ${getErrorMessage(parseErr)}`,
+            stdout: result.stdout || undefined,
+            stderr: result.stderr || undefined,
+          });
+        }
       } catch (err) {
         const details = getHostCommandErrorDetails(err);
         writeTaskResponse(sourceGroup, requestId, { ok: false, ...details });

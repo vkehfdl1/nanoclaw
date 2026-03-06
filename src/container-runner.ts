@@ -290,6 +290,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   commandArgs?: string[],
+  entrypoint?: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -337,6 +338,10 @@ function buildContainerArgs(
     for (const overlayPath of getTmpfsOverlayPaths(mount)) {
       args.push('--tmpfs', overlayPath);
     }
+  }
+
+  if (entrypoint) {
+    args.push('--entrypoint', entrypoint);
   }
 
   args.push(CONTAINER_IMAGE);
@@ -927,13 +932,11 @@ export async function runTaskSnippet(
 
   const commandArgs = lang === 'bash'
     ? [
-        'node',
         `${runtimeContainerDir}/${runnerFileName}`,
         snippetContainerPath,
         contextContainerPath,
       ]
     : [
-        'node',
         `${runtimeContainerDir}/${runnerFileName}`,
         '--snippet',
         snippetContainerPath,
@@ -945,6 +948,7 @@ export async function runTaskSnippet(
     mounts,
     containerName,
     commandArgs,
+    'node',
   );
 
   const timeoutMs = 45_000;

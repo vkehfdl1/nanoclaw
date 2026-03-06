@@ -16,9 +16,10 @@ Drive issue-to-implementation execution with high signal and low latency.
 ## Working Rules
 
 Before any implementation:
-1. `git_pull` for `__REPO_ALIAS__`.
-2. Read relevant files under `/workspace/extra/__REPO_ALIAS__/`.
-3. Write a precise Codex prompt with target files, expected behavior, validation commands, and explicit instructions that Codex must implement, test, commit, push, and open the PR itself.
+1. `gh_issue_linked_prs` for the issue. If any linked PR is `OPEN` or already merged, do not implement it again.
+2. `git_pull` for `__REPO_ALIAS__`.
+3. Read relevant files under `/workspace/extra/__REPO_ALIAS__/`.
+4. Write a precise Codex prompt with target files, expected behavior, validation commands, and explicit instructions that Codex must implement, test, commit, push, and open the PR itself.
 
 ## Issue Readiness
 
@@ -28,21 +29,23 @@ Mark `ready` only when the issue has: a clear problem statement, concrete goals,
 
 1. For scheduled polling, read `[SNIPPET_GATE_PAYLOAD]` from the task prompt.
 2. For manual polling, use `gh_issue_list(repo="__REPO_ALIAS__", state="open")`.
-3. For each new issue: assess scope, risk, and readiness, then post a triage comment and write a `pm-insight`.
-4. If `ready`, run the implementation workflow.
+3. For each new issue: assess scope, risk, readiness, and linked PR status, then post a triage comment and write a `pm-insight`.
+4. If `ready` and no linked PR is `OPEN` or already merged, run the implementation workflow.
 5. Keep `/workspace/group/seen_issues.json` aligned with the latest open issue set.
 6. Send concise Slack summaries only when there is something actionable to report.
 
 ## Implementation Workflow
 
-1. `git_pull(repo="__REPO_ALIAS__")`
-2. Code review of mounted project files; capture file paths, patterns, and constraints.
-3. `git_create_branch(repo="__REPO_ALIAS__", branch="feature/issue-<number>-<slug>")`
-4. Craft a Codex prompt with the issue body, goals, acceptance criteria, code review findings, project conventions, required validation commands, and explicit instructions to commit, push, and open a PR with `Closes #<number>`.
-5. `codex_exec(repo="__REPO_ALIAS__", branch="<branch>", prompt="<prompt>")`
-6. On failure: comment on the issue with failure type, next action, and `Tag: human-attention-needed`; stop.
-7. On success: expect Codex output to include the PR URL, validation summary, and any follow-up notes.
-8. Post a Slack update with the outcome.
+1. `gh_issue_linked_prs(repo="__REPO_ALIAS__", issue_number=<number>)`
+2. If any linked PR is `OPEN` or already merged, stop and report that the issue is already being handled.
+3. `git_pull(repo="__REPO_ALIAS__")`
+4. Code review of mounted project files; capture file paths, patterns, and constraints.
+5. `git_create_branch(repo="__REPO_ALIAS__", branch="feature/issue-<number>-<slug>")`
+6. Craft a Codex prompt with the issue body, goals, acceptance criteria, code review findings, project conventions, required validation commands, and explicit instructions to commit, push, and open a PR with `Closes #<number>`.
+7. `codex_exec(repo="__REPO_ALIAS__", branch="<branch>", prompt="<prompt>")`
+8. On failure: comment on the issue with failure type, next action, and `Tag: human-attention-needed`; stop.
+9. On success: expect Codex output to include the PR URL, validation summary, and any follow-up notes.
+10. Post a Slack update with the outcome.
 
 ## SecondBrain
 
@@ -52,4 +55,5 @@ Write `pm-insight` entries with source `__GROUP_FOLDER__` and project `__REPO_AL
 
 - NEVER implement without running `git_pull` first.
 - NEVER implement issues marked `needs-details`.
+- NEVER implement when an `OPEN` or merged linked PR already exists for the issue.
 - NEVER craft Codex prompts without reading relevant codebase files.

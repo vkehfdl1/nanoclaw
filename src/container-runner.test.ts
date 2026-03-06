@@ -85,7 +85,7 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { runContainerAgent, runTaskSnippet, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 import { validateAdditionalMounts } from './mount-security.js';
 
@@ -261,5 +261,28 @@ describe('container-runner timeout behavior', () => {
     expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.venv');
     expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.git/objects');
     expect(tmpfsPaths.some((p) => p.includes('../bad'))).toBe(false);
+  });
+
+  it('runs javascript task snippets with node as the container entrypoint', async () => {
+    const resultPromise = runTaskSnippet(testGroup, {
+      taskId: 'snippet-task',
+      groupFolder: 'test-group',
+      chatJid: 'test@g.us',
+      scheduleType: 'cron',
+      scheduleValue: '*/15 * * * *',
+      snippet: 'return false;',
+      snippetLanguage: 'javascript',
+      isMain: false,
+    });
+
+    fakeProc.stdout.push('{"ok":true,"should_run":false,"payload":false}\n');
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result).toEqual({ status: 'skip', payload: false });
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    expect(spawnArgs).toContain('--entrypoint');
+    expect(spawnArgs).toContain('node');
   });
 });

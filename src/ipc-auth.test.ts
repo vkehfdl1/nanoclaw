@@ -972,6 +972,81 @@ describe('host repo IPC tasks', () => {
     expect(response.stdout).toContain('issuecomment');
   });
 
+  it('gh_issue_linked_prs returns PRs linked to the requested issue number', async () => {
+    const repoPath = configureAllowedRepo('autorag-research');
+
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'list') {
+        return {
+          stdout: JSON.stringify([
+            {
+              number: 313,
+              title: 'End-to-end pipeline test with CLI',
+              state: 'OPEN',
+              isDraft: false,
+              url: 'https://github.com/example/repo/pull/313',
+              mergedAt: null,
+              closingIssuesReferences: [{ number: 310 }],
+            },
+            {
+              number: 200,
+              title: 'Unrelated PR',
+              state: 'MERGED',
+              isDraft: false,
+              url: 'https://github.com/example/repo/pull/200',
+              mergedAt: '2026-03-01T00:00:00Z',
+              closingIssuesReferences: [{ number: 42 }],
+            },
+          ]),
+          stderr: '',
+        };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    _setHostCommandRunnerForTest(runner);
+
+    await processTaskIpc(
+      {
+        type: 'gh_issue_linked_prs',
+        requestId: 'req-gh-linked-prs',
+        repo: 'autorag-research',
+        issue_number: 310,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(runner).toHaveBeenCalledWith(
+      'gh',
+      [
+        'pr',
+        'list',
+        '--state',
+        'all',
+        '--limit',
+        '500',
+        '--json',
+        'number,title,state,isDraft,url,mergedAt,closingIssuesReferences',
+      ],
+      expect.objectContaining({ cwd: repoPath }),
+    );
+
+    const response = readTaskResponse('req-gh-linked-prs');
+    expect(response.ok).toBe(true);
+    expect(response.stdout).toBeDefined();
+    expect(JSON.parse(response.stdout ?? '[]')).toEqual([
+      {
+        number: 313,
+        title: 'End-to-end pipeline test with CLI',
+        state: 'OPEN',
+        isDraft: false,
+        url: 'https://github.com/example/repo/pull/313',
+        mergedAt: null,
+      },
+    ]);
+  });
+
   it('gh_pr_diff fetches the PR diff for the requested PR number', async () => {
     const repoPath = configureAllowedRepo('autorag-research');
 

@@ -677,6 +677,40 @@ server.tool(
 );
 
 server.tool(
+  'gh_issue_linked_prs',
+  'List pull requests linked to a GitHub issue using the host gh CLI.',
+  {
+    repo: z.string().describe('Allowed repository name'),
+    issue_number: z.number().int().positive().describe('Issue number'),
+  },
+  async (args) => {
+    try {
+      const response = await runTaskWithResponse(
+        {
+          type: 'gh_issue_linked_prs',
+          repo: args.repo,
+          issue_number: args.issue_number,
+        },
+        HOST_OP_RESPONSE_TIMEOUT_MS,
+      );
+      const result = formatTaskResult(
+        response,
+        `No linked pull requests found for issue #${args.issue_number}.`,
+      );
+      return {
+        content: [{ type: 'text' as const, text: result.text }],
+        isError: result.isError,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `gh_issue_linked_prs failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
   'write_secondbrain_insight',
   `Write a structured insight or summary to the SecondBrain inbox.
 
