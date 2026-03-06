@@ -41,9 +41,11 @@ agent-browser snapshot -i
 Only keep trends that plausibly connect to the current brand profile.
 
 Auth rules before doing login-required SNS work:
-- X: prefer the persistent profile under `/workspace/extra/auth-profiles/x/`.
-- Threads: prefer `/workspace/extra/auth-profiles/threads-import/` if present; use `/workspace/extra/auth/threads.json` only as fallback.
-- Validate login against the live site UI. Do not rely on marker files alone.
+- Use only `/workspace/extra/auth/*.json` as the canonical auth input inside the container.
+- Do not use `/workspace/extra/auth-profiles/` as an auth source from inside the container. Those host profiles are only for human re-auth on the host.
+- Treat `/workspace/extra/auth/x-auth.json` as a hint only, not definitive login state.
+- Validate login against the live site UI plus canonical auth cookies. Useful evidence includes `auth_token` for X, `li_at` for LinkedIn, and `sessionid` for Threads.
+- If auth is invalid, ask the user to refresh it from the host with `npm run auth:session -- <platform>`.
 
 ### 3. Run targeted web search
 

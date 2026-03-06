@@ -5,6 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
+    "auth:check": "node scripts/create-auth-session.mjs check",
+    "auth:session": "node scripts/create-auth-session.mjs",
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",

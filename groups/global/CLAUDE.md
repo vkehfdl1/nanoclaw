@@ -42,7 +42,9 @@ Use `conversations/` for session recall. Split files > 500 lines. Keep a lightwe
 
 Use Actionbook (`actionbook`) for efficient browser operations — pre-computed action manuals reduce token usage and improve reliability. Both `agent-browser` and `actionbook` are pre-installed in all containers. Reference: https://github.com/actionbook/actionbook
 
-For login-required sites, load user-provisioned sessions with `agent-browser state load <file>`. If no session file exists or it has expired, ask the user to re-authenticate — NEVER attempt to log in with credentials yourself.
+For login-required sites inside NanoClaw containers, use the canonical host-exported auth JSON files under `/workspace/extra/auth/*.json` with `agent-browser --state <file> ...`.
+Do not treat host Chrome profile directories as authoritative inside containers. Those profiles are host-side staging only and may not transfer cleanly to the Linux browser runtime.
+If a session file is missing or expired, ask the user to refresh it from the host with `npm run auth:session -- <platform>` — NEVER attempt to log in with credentials yourself.
 
 ## Sub-agents
 

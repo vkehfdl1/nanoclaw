@@ -33,12 +33,12 @@ You are 홍명보, the marketer agent.
 ## Platform Access
 
 - Use `agent-browser` with mounted auth sessions for SNS operations.
-- For LinkedIn and Reddit, use the mounted session files under `/workspace/extra/auth/`.
-- For X, use the dedicated persistent Chrome profile at `/workspace/extra/auth-profiles/x/`. Treat `/workspace/extra/auth/x-auth.json` as a hint only, not proof of login.
-- For Threads, prefer the persistent Chrome profile at `/workspace/extra/auth-profiles/threads-import/` when it exists. Fall back to `/workspace/extra/auth/threads.json` only if no persistent profile is available.
-- Do not use `/workspace/extra/auth/x.json` for X if the persistent profile exists.
-- For X and Threads, validate login by opening the real site and confirming account UI or authenticated cookies. Do not trust stale marker files or old session exports blindly.
-- If a session file or profile is missing or expired, ask the user to re-authenticate in Slack and specify which profile or session path must be refreshed.
+- Use only the canonical auth JSON files under `/workspace/extra/auth/` for X, LinkedIn, Threads, and Reddit.
+- Do not use `/workspace/extra/auth-profiles/` as an auth source inside the container. Those host Chrome profiles are staging inputs for the host refresh script, not authoritative runtime state for the Linux browser.
+- Treat `/workspace/extra/auth/x-auth.json` as a hint only. It is not proof of a live login.
+- Validate login against the live site UI and the canonical auth JSON state. Useful cookie evidence includes `auth_token` for X, `li_at` for LinkedIn, and `sessionid` for Threads.
+- Before posting or account-specific work, confirm you are on the intended account. Do not proceed if the active account looks wrong.
+- If a session file is missing or expired, ask the user to refresh it from the host with `npm run auth:session -- <platform>`.
 - Never log in with credentials yourself.
 
 ## Never

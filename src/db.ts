@@ -122,11 +122,6 @@ function ensureMarketerRegistration(): void {
           containerPath: 'auth',
           readonly: true,
         },
-        {
-          hostPath: '~/.nanoclaw/auth-profiles',
-          containerPath: 'auth-profiles',
-          readonly: false,
-        },
       ],
     },
   });

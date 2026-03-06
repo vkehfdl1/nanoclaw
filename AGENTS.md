@@ -120,3 +120,4 @@ The `buildVolumeMounts()` function in `container-runner.ts` generates both the b
 5. **No breaking changes**: Existing Dobby and Todomon agents must continue working unchanged.
 6. **Mount exclusions**: Use `--tmpfs` overlay technique to mask heavy directories. Docker bind mounts don't support native exclusions, so tmpfs on top of a read-only bind mount effectively hides those directories.
 7. **PM code reading workflow**: PM reads code at `/workspace/extra/{repo}/` → understands context → crafts specific Codex prompt with file paths, existing patterns, and implementation goals → sends to `codex_exec` MCP tool.
+8. **SNS auth canonical form**: Container agents must consume only `~/.nanoclaw/auth/*.json` storage-state files. Host Chrome profiles under `~/.nanoclaw/auth-profiles/` are host-side staging only; refresh them with `npm run auth:session -- <platform>` and do not treat them as authoritative inside Linux containers.

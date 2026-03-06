@@ -492,11 +492,6 @@ describe('default agent registrations', () => {
         containerPath: 'auth',
         readonly: true,
       },
-      {
-        hostPath: '~/.nanoclaw/auth-profiles',
-        containerPath: 'auth-profiles',
-        readonly: false,
-      },
     ]);
 
     // 도비 is no longer auto-registered in the marketer channel.
