@@ -1,56 +1,36 @@
 {
   "version": "1",
-  "description": "Marketer agent periodic task schedule. Tasks defined here are bootstrapped automatically at system startup if not already registered in the database.",
+  "description": "Marketer agent recurring schedule. All Slack-facing summaries and approval requests must be sent in Korean.",
   "tasks": [
     {
       "id": "marketer-daily-sns-trend-check",
       "name": "Daily SNS Trend Check",
-      "description": "Run a lightweight daily trend scan and capture actionable short-form opportunities.",
+      "description": "Run a concrete daily trend sweep and surface only evidence-backed opportunities.",
       "enabled": true,
       "schedule_type": "cron",
       "schedule_value": "0 9 * * *",
       "context_mode": "group",
-      "prompt": "Run the daily SNS trend check.\n\n1. Review trending topics on X, LinkedIn, and Threads via web search + agent-browser.\n2. Identify up to 3 trends relevant to current projects or personal-brand positioning.\n3. Append findings to /workspace/group/research/trends-$(date +%Y-%m).md under a 'Daily Check' section.\n4. Save a compact structured snapshot to /workspace/group/insights/$(date +%Y-%m-%d)-daily.json with fields: trending_topics, relevance, suggested_hooks.\n5. Send Dobby a short summary via mcp__nanoclaw__send_message with the top 1-2 high-potential ideas."
+      "prompt": "Run the daily SNS trend check.\n\n1. Read /workspace/group/brand/profile.md and /workspace/group/config/platforms.json.\n2. Choose up to 2 research categories from config.research_categories that best match the current brand profile.\n3. For each chosen category, take the first 3 seed_keywords as today's keyword set.\n4. Collect trend signals in this exact way:\n   - Open X Explore with agent-browser and capture the top tech/AI/productivity-adjacent trends.\n   - For each selected seed keyword, run these web-search patterns:\n     * \"{seed_keyword} trending $(date +%Y-%m)\"\n     * \"site:x.com {seed_keyword} $(date +%Y-%m-%d)\"\n     * \"site:linkedin.com/posts {seed_keyword} $(date +%Y)\"\n     * \"site:threads.net {seed_keyword}\"\n   - Only open LinkedIn or Threads search pages with agent-browser when a keyword shows clear relevance in web results.\n5. For each candidate trend, score it from 1-5 on: recency, relevance to the brand profile, evidence strength, and draftability within 72 hours.\n6. Keep at most 3 opportunities. Discard celebrity gossip, general politics, vague hype, and anything without clear evidence.\n7. Append findings to /workspace/group/research/trends-$(date +%Y-%m).md under a \"Daily Check\" section. For each kept trend include: keyword, source, evidence, why it fits, and suggested angle.\n8. Save /workspace/group/insights/$(date +%Y-%m-%d)-daily.json with fields: trending_topics, search_queries_used, evidence, relevance, suggested_angles, next_action.\n9. Send a Korean Slack summary via mcp__nanoclaw__send_message using this structure:\n   [일일 트렌드 점검]\n   - 후보 1: {topic} / 근거: {evidence} / 각도: {angle}\n   - 후보 2: ...\n   - 후보 3: ...\n   마지막 줄: \"원하면 이 중 하나를 바로 게시물 초안으로 확장하겠습니다.\"\n10. Do not draft or publish a post in this task unless the user explicitly asks for it in a later Slack message."
     },
     {
       "id": "marketer-weekly-content-planning",
       "name": "Weekly Content Planning",
-      "description": "Create next week's cross-platform content plan based on recent trend and performance signals.",
+      "description": "Create next week's content plan from local research outputs and local publish logs.",
       "enabled": true,
       "schedule_type": "cron",
       "schedule_value": "0 10 * * 1",
       "context_mode": "group",
-      "prompt": "Run weekly content planning.\n\n1. Review this week's research outputs in /workspace/group/research/ and /workspace/group/insights/.\n2. Review recent post performance from /workspace/group/published/log.md.\n3. Build next week's plan in /workspace/group/campaigns/weekly-$(date +%Y-%m-%d).md with:\n   - platform-by-platform topic lineup (X, LinkedIn, Threads, Reddit)\n   - target audience intent per post\n   - CTA per post\n   - draft priority (high/medium/low)\n4. Mark any urgent opportunities for immediate draft creation.\n5. Send Dobby a planning summary and ask for priority confirmation before execution."
-    },
-    {
-      "id": "marketer-weekly-research",
-      "name": "Weekly SNS Trend Research",
-      "description": "Research social media trends, competitor content, and platform insights. Generate content ideas based on findings. Write a structured sns-research insight to SecondBrain.",
-      "enabled": true,
-      "schedule_type": "cron",
-      "schedule_value": "0 8 * * 1",
-      "context_mode": "group",
-      "prompt": "Run weekly SNS trend research for the user's projects and personal brand.\n\nPhase 1 — Research:\n1. Check /workspace/group/brand/profile.md for niche topics and brand goals\n2. Search for trending topics in those niches via web search\n3. Visit platform trend pages with agent-browser (X Explore, LinkedIn trending, Threads search)\n4. Analyze 2-3 competitor accounts: what's their best-performing content this week?\n5. If SecondBrain is mounted at /workspace/secondbrain/, read the 5 most recent inbox items:\n   ls -t /workspace/secondbrain/inbox/*.md | head -5 | xargs -I{} cat {}\n   Extract project signals: milestones, releases, wins, user feedback\n\nPhase 2 — Document Findings:\n6. Append key findings to /workspace/group/research/trends-$(date +%Y-%m).md\n7. Save structured insights JSON to /workspace/group/insights/$(date +%Y-%m-%d)-weekly.json\n   Include: trending_topics, competitor_insights, secondbrain_signals, optimal_posting_times, content_opportunities\n   Set status to 'pending_drafts'\n\nPhase 3 — Write to SecondBrain:\n8. If SecondBrain is mounted at /workspace/secondbrain/, write a research summary using the shared MCP tool:\n   mcp__nanoclaw__write_secondbrain_insight(\n     type: 'marketer-insight',\n     source: 'marketer',\n     title: 'Weekly SNS Research — ' + today's date,\n     project: 'personal-brand',\n     tags: ['sns-research', 'weekly'],\n     content: 'Summary of: trending topics found, competitor gaps identified, top content opportunities, optimal posting times'\n   )\n   Then update secondbrain_written_at in the insights JSON\n\nPhase 4 — Content Creation Pipeline:\n9. For each content_opportunity in the insights JSON:\n   - urgency 'high' or 'medium': create draft NOW at /workspace/group/drafts/YYYY-MM-DD-slug.md\n     * Include header: Insight-Source: insights/YYYY-MM-DD-weekly.json#co-NNN\n     * Write 2-3 platform-adapted variations (X, LinkedIn, Threads as applicable)\n     * Add media suggestion if topic warrants it\n     * Update opportunity in insights JSON: set draft_file and draft_created_at\n   - urgency 'low': append to /workspace/group/research/backlog.md\n10. Update insights JSON status -> 'drafts_created', drafts_created_at -> ISO timestamp\n\nPhase 5 — Approval Request:\n11. Post each draft in #marketer with this exact format:\n    [DRAFT - {platform}]\n    {content}\n\n    React with :white_check_mark: or reply \"승인\" to approve.\n    Then wait for either a checkmark reaction or a thread reply that starts with 승인/approve before publishing."
-    },
-    {
-      "id": "marketer-monthly-brand-review",
-      "name": "Monthly Personal Brand Metrics Review",
-      "description": "Review personal brand growth metrics, update tracking, and plan next month's brand strategy. Write a brand-update insight to SecondBrain.",
-      "enabled": true,
-      "schedule_type": "cron",
-      "schedule_value": "0 10 1 * *",
-      "context_mode": "group",
-      "prompt": "Run the monthly personal brand metrics review.\n\n1. Review follower and engagement data across all active platforms (use agent-browser if API not available)\n2. Update /workspace/group/brand/metrics.md with current counts, growth rate, top performing posts\n3. Identify what content formats and topics performed best this month\n4. Review /workspace/group/published/log.md for post performance patterns\n5. Write a brief strategy note for the coming month: what to double down on, what to avoid\n6. If goals in /workspace/group/brand/profile.md are being met ahead of schedule, consider updating them\n7. If SecondBrain is mounted at /workspace/secondbrain/, write a brand-update insight using the shared MCP tool:\n   mcp__nanoclaw__write_secondbrain_insight(\n     type: 'marketer-insight',\n     source: 'marketer',\n     title: 'Monthly Brand Review — ' + YYYY-MM,\n     project: 'personal-brand',\n     tags: ['brand-update', 'monthly-review'],\n     content: 'Include: follower counts and growth rate per platform, top content format this month, engagement highlights, strategy note for next month'\n   )\n\nKeep the review focused and practical. Summarize key insights at the end."
+      "prompt": "Run weekly content planning.\n\n1. Review this week's research outputs in /workspace/group/research/ and /workspace/group/insights/.\n2. Review the local operating log at /workspace/group/published/log.md. This file is not in SecondBrain.\n3. Build next week's plan in /workspace/group/campaigns/weekly-$(date +%Y-%m-%d).md with:\n   - platform-by-platform topic lineup\n   - target audience intent per post\n   - the concrete fact or signal each post is based on\n   - recommended CTA or takeaway\n   - draft priority (high/medium/low)\n4. Do not publish or auto-draft from this task. This task is for planning and prioritization only.\n5. Send a Korean Slack summary via mcp__nanoclaw__send_message with:\n   [주간 콘텐츠 계획]\n   - 이번 주 핵심 주제 3개\n   - 우선순위 high 아이템\n   - 보류해도 되는 아이템\n   마지막 줄: \"승인해 주시면 우선순위 높은 항목부터 초안을 준비하겠습니다.\""
     },
     {
       "id": "marketer-comment-sweep",
       "name": "Periodic Comment Monitoring Sweep",
-      "description": "Check for unmonitored comments on recent posts and respond to substantive engagement.",
+      "description": "Check recent comments, prepare reply drafts, and ask for human approval in Korean before posting.",
       "enabled": true,
       "schedule_type": "cron",
       "schedule_value": "0 */6 * * *",
       "context_mode": "group",
-      "prompt": "Run a comment monitoring sweep across all recently published posts.\n\n1. Check /workspace/group/published/log.md for posts published in the last 7 days\n2. For each recent post, check for new comments or replies (use agent-browser or platform API)\n3. Respond to substantive comments: genuine engagement, answering questions, thanking feedback\n4. Like-and-move-on for simple praise or emoji reactions (no reply needed)\n5. Escalate to Dobby via mcp__nanoclaw__send_message for:\n   - Legal concerns or sensitive topics\n   - PR crisis situations\n   - Requests for collaboration or business inquiries\n   - Influential accounts that warrant special attention\n6. Log all responses in /workspace/group/published/comments-log.md\n\nBe genuine and on-brand. Avoid robotic or templated replies."
+      "prompt": "Run a comment monitoring sweep across all recently published posts.\n\n1. Check /workspace/group/published/log.md for posts published in the last 7 days.\n2. For each recent post, check for new comments or replies using agent-browser or platform tools.\n3. Classify each comment into one of three buckets:\n   - no-reply-needed\n   - draft-reply\n   - urgent-human-review\n4. For no-reply-needed items, note \"like only\" or \"no action\" in /workspace/group/published/comments-log.md.\n5. For draft-reply items, write a proposed reply but do not post it.\n6. For urgent-human-review items, summarize the situation without drafting a risky answer.\n7. Send one Korean Slack message via mcp__nanoclaw__send_message using this structure:\n   [댓글/답글 검토 요청]\n   - 플랫폼 / 게시물 / 원문 요약\n   - 분류: no-reply-needed | draft-reply | urgent-human-review\n   - 제안 답글: {draft or \"없음\"}\n   마지막 줄: \"승인해 주시면 해당 답글만 게시하겠습니다. 승인 전에는 아무 응답도 게시하지 않겠습니다.\"\n8. Log every reviewed item to /workspace/group/published/comments-log.md with status pending_approval, no_reply_needed, or approved_and_posted.\n9. Stop after sending the Korean approval request. Do not post any reply in this scheduled task unless explicit approval already exists in the current Slack thread."
     }
   ]
 }

@@ -14,7 +14,7 @@ This document describes the multi-agent team system built on NanoClaw. Each agen
    - 4.2 [PM ↔ Marketer](#42-pm--marketer)
    - 4.3 [PM → Codex Sub-agent](#43-pm--codex-sub-agent)
    - 4.4 [PM → Reviewer Sub-agent](#44-pm--reviewer-sub-agent)
-   - 4.5 [Marketer → Dobby Approval Flow](#45-marketer--dobby-approval-flow)
+   - 4.5 [Marketer → User Approval Flow](#45-marketer--user-approval-flow)
    - 4.6 [Dobby → Todomon](#46-dobby--todomon)
 5. [Container Topology](#5-container-topology)
 6. [SecondBrain Integration](#6-secondbrain-integration)
@@ -252,7 +252,7 @@ PM Agent                      IPC Bus                   Marketer
    │                             │  route to marketer       │
    │                             │─────────────────────────▶│
    │                             │                          │ research + draft
-   │                             │                          │ seek Dobby approval
+   │                             │                          │ ask user for Slack approval
    │                             │                          │ publish (if approved)
 ```
 
@@ -275,7 +275,7 @@ PM Agent                      IPC Bus                   Marketer
 }
 ```
 
-Marketer handles this asynchronously: researches, drafts content, then initiates the Dobby approval flow (see §4.5).
+Marketer handles this asynchronously: researches, drafts content, then asks the user for approval directly in Slack before publishing (see §4.5).
 
 #### Marketer → PM: Context Query (rare)
 
@@ -468,159 +468,65 @@ gh pr review 17 --repo $GITHUB_REPO \
 
 ---
 
-### 4.5 Marketer → Dobby Approval Flow
+### 4.5 Marketer → User Approval Flow
 
-All new SNS posts require Dobby's approval before publishing. This is an **async WhatsApp-based flow** that does not block Marketer — Marketer writes the request and polls for a response.
+All new SNS posts, comments, and replies require explicit user approval in Slack before publishing. Marketer sends approval requests directly with `mcp__nanoclaw__send_message`; Dobby is not in this approval loop.
 
 #### Full Flow
 
 ```
-Marketer                      IPC Bus                    Dobby              User (WhatsApp)
-   │                             │                          │                     │
-   │  1. Draft post(s)           │                          │                     │
-   │  2. Save to drafts/         │                          │                     │
-   │                             │                          │                     │
-   │  3. Write approval request  │                          │                     │
-   │────────────────────────────▶│                          │                     │
-   │                             │  route to dobby          │                     │
-   │                             │─────────────────────────▶│                     │
-   │                             │                          │  4. Format & forward│
-   │                             │                          │────────────────────▶│
-   │                             │                          │                     │
-   │  (Marketer continues other  │                          │  5. User replies:   │
-   │   work or waits on schedule)│                          │  approve/reject/edit│
-   │                             │                          │◀────────────────────│
-   │                             │                          │                     │
-   │                             │  6. Write response       │                     │
-   │                             │◀─────────────────────────│                     │
-   │  7. Receive response        │                          │                     │
-   │◀────────────────────────────│                          │                     │
-   │                             │                          │                     │
-   │  8a. approved → publish     │                          │                     │
-   │  8b. rejected → archive     │                          │                     │
-   │  8c. edited → revise + loop │                          │                     │
+Marketer                                              User (Slack)
+   │                                                       │
+   │  1. Draft post/comment/reply                          │
+   │  2. Save local draft or note                          │
+   │                                                       │
+   │  3. Send Korean approval request in Slack             │
+   │──────────────────────────────────────────────────────▶│
+   │                                                       │
+   │  4. Wait for explicit approval / edits / hold         │
+   │◀──────────────────────────────────────────────────────│
+   │                                                       │
+   │  5a. approved → publish/post reply                    │
+   │  5b. edited → revise and ask again                    │
+   │  5c. hold/rejected → keep local note only             │
 ```
 
-#### Step 3: Marketer Writes Approval Request
+#### Approval Message Format
 
-File: `/workspace/ipc/tasks/marketer_approval_{ts}.json`
+Marketer sends Korean Slack messages in one of these forms:
 
-```json
-{
-  "type": "marketer_approval_request",
-  "request_id": "apr-789-xyz",
-  "source_agent": "marketer",
-  "target_group_folder": "dobby",
-  "platform": "x",
-  "draft": "Just shipped major performance improvements to webapp — login is now 3x faster. The kind of boring work that makes everything better. 🚀",
-  "media": [],
-  "context": "webapp v2.0 release promotion — requested by pm-webapp",
-  "draft_file": "drafts/2026-03-02-webapp-v2-announce.md",
-  "expires_at": "2026-03-03T10:00:00Z",
-  "created_at": "2026-03-02T10:00:00Z"
-}
+```text
+[승인 요청 - 게시물 초안]
+플랫폼: X
+목적: 출시 공지
+근거: 실제 릴리스와 사용자 체감 개선
+초안:
+...
+
+응답 방법: 승인 / 수정: ... / 보류
 ```
 
-#### Step 4: Dobby Forwards to User (WhatsApp)
+```text
+[승인 요청 - 댓글/답글 초안]
+플랫폼: LinkedIn
+원문:
+...
 
-Dobby sends via `mcp__nanoclaw__send_message`:
+제안 답글:
+...
 
-```
-*[Marketer — draft post for X]*
-
-Just shipped major performance improvements to webapp — login is now 3x faster. The kind of boring work that makes everything better. 🚀
-
-Reply *approve*, *reject*, or send your edits.
-(Request expires in 24h)
-```
-
-Dobby tracks this in `/workspace/group/marketer_approvals.json`:
-
-```json
-{
-  "pending": [
-    {
-      "request_id": "apr-789-xyz",
-      "platform": "x",
-      "draft": "...",
-      "draft_file": "drafts/2026-03-02-webapp-v2-announce.md",
-      "requested_at": "2026-03-02T10:00:00Z",
-      "expires_at": "2026-03-03T10:00:00Z"
-    }
-  ]
-}
+응답 방법: 승인 / 수정: ... / 보류 / 답글하지 않음
 ```
 
-#### Step 6: Dobby Writes Response
+#### Marketer Handling Rules
 
-File: `/workspace/ipc/tasks/marketer_response_{ts}.json`
+| User response | Marketer Action |
+|---------------|-----------------|
+| `승인` or explicit equivalent | Publish/post reply; log to local files |
+| revision request | Revise the draft and ask again |
+| `보류` / rejection | Keep the draft locally and do nothing further |
 
-**Approved:**
-```json
-{
-  "type": "marketer_approval_response",
-  "request_id": "apr-789-xyz",
-  "source_agent": "dobby",
-  "target_group_folder": "marketer",
-  "decision": "approved",
-  "edited_content": null,
-  "created_at": "2026-03-02T10:31:00Z"
-}
-```
-
-**Rejected:**
-```json
-{
-  "type": "marketer_approval_response",
-  "request_id": "apr-789-xyz",
-  "source_agent": "dobby",
-  "target_group_folder": "marketer",
-  "decision": "rejected",
-  "feedback": "Too technical. Rewrite to lead with the user benefit, not the implementation detail.",
-  "created_at": "2026-03-02T10:31:00Z"
-}
-```
-
-**Edit requested** (user sent freeform text):
-```json
-{
-  "type": "marketer_approval_response",
-  "request_id": "apr-789-xyz",
-  "source_agent": "dobby",
-  "target_group_folder": "marketer",
-  "decision": "edit_requested",
-  "feedback": "Lead with the user benefit. Keep the emoji but move it to the end.",
-  "created_at": "2026-03-02T10:31:00Z"
-}
-```
-
-#### Decision Keywords
-
-| User says (case-insensitive) | Dobby action |
-|------------------------------|-------------|
-| `approve` / `ok` / `go` / `yes` / `lgtm` | `decision: "approved"` |
-| `reject` / `no` / `skip` | `decision: "rejected"` |
-| Any other text | `decision: "edit_requested"`, relay text as `feedback` |
-
-#### Step 8: Marketer Handles Response
-
-| Decision | Marketer Action |
-|----------|----------------|
-| `approved` | Publish to platform API or browser automation; log to `published/log.md`; schedule comment monitoring |
-| `rejected` | Archive draft to `drafts/archived/`; note rejection reason |
-| `edit_requested` | Apply feedback to draft; re-send approval request (loops back to Step 3) |
-
-#### Approval Audit Log
-
-Marketer maintains `/workspace/group/approvals/log.md`:
-
-```
-## 2026-03-02 — webapp v2.0 announce (X)
-- Submitted: 10:00
-- Approved: 10:31 (Dobby: "approve")
-- Published: X at 10:32
-- Post ID: x/1234567890
-```
+Silence is never treated as approval.
 
 ---
 
@@ -817,29 +723,17 @@ WhatsApp is the **primary user-facing channel**. The user communicates with the 
 | Dimension | Details |
 |-----------|---------|
 | **Trigger** | Incoming user message matching the trigger pattern (e.g., `@Andy`) in a registered chat |
-| **Trigger** | `marketer_approval_request` IPC file detected from Marketer |
 | **Trigger** | `pm_escalation` IPC file detected from a PM agent |
-| **Trigger** | Scheduled session startup (check for pending approvals) |
 | **Operations** | `mcp__nanoclaw__send_message` — send immediately mid-run without blocking |
 | **Operations** | Standard response text returned at end of agent run (router prefixes and sends) |
 | **Data read** | Full conversation context since last agent interaction (timestamp + sender + text), delivered by the host router as a prompt |
-| **Data read** | User reply to approval request (approve / reject / edit keywords or freeform edit text) |
 | **Data written** | All text responses sent to the user |
-| **Data written** | Marketer draft post forwarded for review (formatted with platform, draft text, expiry) |
 | **Data written** | PM escalation summary (subject, body, action needed, GitHub URL) |
-| **Data written** | Pending approval reminders on startup if `marketer_approvals.json` has open items |
 | **Formatting** | WhatsApp only: `*bold*`, `_italic_`, `•` bullets, ` ``` ` code blocks; no `##` headings, no `[text](url)` |
 
-#### 8.1.2 Marketer → WhatsApp (via Dobby relay)
+#### 8.1.2 Marketer approval no longer uses Dobby relay
 
-Marketer never writes to WhatsApp directly. It writes an IPC approval request, and Dobby forwards the draft to the user.
-
-| Dimension | Details |
-|-----------|---------|
-| **Trigger** | Marketer finishes drafting a post and needs user approval before publishing |
-| **Operations** | Write `marketer_approval_request` IPC file → Dobby picks up and sends WhatsApp message |
-| **Data written (to IPC)** | `request_id`, `platform`, draft text, `context`, `expires_at`, path to draft file |
-| **Data read (from IPC)** | `marketer_approval_response` written by Dobby after user's WhatsApp reply; contains `decision` (`approved` / `rejected` / `edit_requested`) and optional `feedback` |
+Marketer approval now happens directly in Slack. There is no Marketer → Dobby → WhatsApp relay for post or reply approval.
 
 #### 8.1.3 PM Agent → WhatsApp (via Dobby relay)
 
@@ -1045,18 +939,17 @@ tags: [decision, bug, feature, blocked, retro]
 | `blocked` | Stalled work, reason, next steps |
 | `retro` | Lessons learned, process improvements |
 
-#### 8.4.2 Marketer ← SecondBrain (read only)
+#### 8.4.2 Marketer ↔ SecondBrain (selective)
 
 | Dimension | Details |
 |-----------|---------|
-| **Trigger** | Self-initiated weekly research sweep (Monday 8 AM cron) |
+| **Trigger** | Self-initiated daily trend sweep |
 | **Trigger** | PM agent sends a `marketer_request` referencing a SecondBrain insight file |
-| **Trigger** | Dobby directs Marketer to promote a recent project milestone |
 | **Operations** | Read files in `/workspace/extra/secondbrain/inbox/` |
 | **Data read** | `pm-insight` Markdown files: project name, date, tags, decision/outcome summaries, action items |
-| **Data written** | Nothing — Marketer never writes to SecondBrain |
+| **Data written** | Optional `marketer-insight` entries for notable findings or campaign learnings |
 | **Container path** | `/workspace/extra/secondbrain/` (host: SecondBrain inbox directory) |
-| **Mount access** | read-only |
+| **Mount access** | read-only for inbox browsing; writes happen through the shared insight tool |
 | **What Marketer extracts** | Project milestones worth amplifying; verifiable metrics and achievements; notable decisions suitable for thought-leadership content; user feedback signals; upcoming events |
 | **Constraint** | Only promote real, verifiable information from SecondBrain — no fabricated metrics |
 
@@ -1078,7 +971,7 @@ A complete reference showing which agents interact with each external system and
 |-------|:--------:|:-----:|:------:|:-----------:|
 | **Dobby** | ✅ R+W | — | — | — |
 | **Todomon** | 🔁 W via host | — | — | — |
-| **Marketer** | 🔁 W via Dobby | — | — | 📖 R only |
+| **Marketer** | — | ✅ R+W | — | 📖 R / ✍️ selective |
 | **PM Agent** | 🔁 W via Dobby | ✅ R+W | ✅ R+W | ✍️ W only |
 | **Codex sub-agent** | — | — | ✅ W (branch/PR) | — |
 | **Reviewer sub-agent** | — | — | ✅ W (review comments) | — |
@@ -1169,7 +1062,7 @@ This trace shows every external system touched during the content creation and p
 
 ```
 Trigger: [Slack] PM agent detects a promotable milestone and sends marketer_request IPC
-      OR: Marketer self-initiates (Monday 8 AM weekly cron)
+      OR: Marketer self-initiates (daily trend check or weekly planning)
           │
           ▼
 [SecondBrain] Marketer reads inbox files
@@ -1177,50 +1070,36 @@ Trigger: [Slack] PM agent detects a promotable milestone and sends marketer_requ
           │
           ▼
 Marketer researches trends
-  (web search, agent-browser → X Explore, LinkedIn trending)
+  (web search, agent-browser → X Explore, optional LinkedIn/Threads confirmation)
   writes research → /workspace/group/research/trends-YYYY-MM.md (local)
           │
           ▼
-Marketer drafts 2–3 post variations per platform
+Marketer drafts a post or reply candidate only when there is a concrete opportunity
   writes drafts → /workspace/group/drafts/YYYY-MM-DD-slug.md (local)
           │
           ▼
-Marketer writes marketer_approval_request IPC file
+Marketer sends Korean approval request directly in Slack
           │
-          ▼
-[WhatsApp] Dobby forwards draft to user
-           (formatted with platform, draft text, expiry countdown)
+          ├─ 보류 / 거절
+          │     Marketer keeps the draft locally and stops
           │
-          │  User replies on WhatsApp
+          ├─ 수정 요청
+          │     Marketer revises draft → re-sends Slack approval request (loop)
           │
-          ▼
-Dobby writes marketer_approval_response IPC file
-          │
-          ├─ REJECTED
-          │     Marketer archives draft → /workspace/group/drafts/archived/ (local)
-          │
-          ├─ EDIT_REQUESTED
-          │     Marketer revises draft → re-sends approval request (loop)
-          │
-          └─ APPROVED
+          └─ 승인
                 │
                 ▼
           Marketer publishes to SNS platform(s)
             (X API / LinkedIn API / Threads API / agent-browser fallback)
             writes → /workspace/group/published/log.md (local registry)
-            writes → /workspace/group/approvals/log.md (local audit trail)
                 │
                 ▼
           Marketer schedules comment monitoring
-            (interval task: every 2h for 48h after publication)
+            (interval task: every 6h)
                 │
                 ▼
-          Marketer monitors comments autonomously
+          Marketer monitors comments
             reads SNS platform comments (API or agent-browser)
-            writes comment replies (no approval needed for replies)
+            prepares reply drafts and asks for approval in Slack
             writes → /workspace/group/published/comments-log.md (local)
-                │
-                └─ Sensitive comment detected?
-                      [WhatsApp] Marketer escalates to Dobby via IPC
-                                 (legal, PR crisis, influential account, collab request)
 ```

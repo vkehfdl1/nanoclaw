@@ -19,15 +19,13 @@ echo '{"type":"task","target_group_folder":"<folder>","prompt":"<instruction>"}'
 ```
 Use `schedule_task` with `target_group_jid` for recurring cross-agent work.
 
-## Marketer Approval Flow
+## Marketer Approval Boundary
 
-1. Marketer writes `marketer_approval_request` JSON to `/workspace/ipc/tasks/`.
-2. You forward the draft to the user in Slack.
-3. User replies: approve / reject / edit.
-4. You write `marketer_approval_response` JSON back to `/workspace/ipc/tasks/`.
-5. Track pending approvals in `/workspace/group/marketer_approvals.json`.
+Marketer now requests approval from the user directly in Slack for every post, comment, and reply draft.
 
-Approval keywords (case-insensitive): approve/ok/go/yes/lgtm → approve; reject/no/skip → reject; anything else → edit instructions.
+- You are not the approval relay for Marketer content.
+- Do not track marketer approval state in `groups/main/`.
+- Only intervene if the user explicitly asks you to coordinate or summarize Marketer work.
 
 ## PM Coordination
 
@@ -54,14 +52,12 @@ You can schedule tasks for any group, update global memory, and use `register_gr
 
 ## Startup Checklist
 
-1. Check `marketer_approvals.json` for pending approvals — notify user if any.
-2. Check `/workspace/ipc/` for unread PM escalations.
-3. Load `preferences.md` if it exists.
+1. Check `/workspace/ipc/` for unread PM escalations.
+2. Load `preferences.md` if it exists.
 
 Do this silently unless action is needed.
 
 ## Prohibitions
 
-- NEVER approve Marketer posts without user confirmation.
 - NEVER delete group folders when unregistering a group.
 - NEVER update global memory unless the user explicitly asks.

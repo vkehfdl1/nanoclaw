@@ -496,10 +496,9 @@ describe('bootstrapAllAgentSchedules', () => {
 
 describe('real marketer schedule.json', () => {
   it('is parseable and has valid structure', async () => {
-    // Use the actual file from the project (via dynamic import to bypass mock)
     const realSchedulePath = path.resolve(
-      import.meta.url.replace('file://', ''),
-      '../../../groups/marketer/schedule.json',
+      process.cwd(),
+      'groups/marketer/schedule.json',
     );
 
     if (!fs.existsSync(realSchedulePath)) {
@@ -529,5 +528,23 @@ describe('real marketer schedule.json', () => {
         expect(ms).toBeGreaterThan(0);
       }
     }
+  });
+
+  it('contains only the approved marketer recurring tasks', async () => {
+    const realSchedulePath = path.resolve(
+      process.cwd(),
+      'groups/marketer/schedule.json',
+    );
+
+    if (!fs.existsSync(realSchedulePath)) {
+      return;
+    }
+
+    const raw = JSON.parse(fs.readFileSync(realSchedulePath, 'utf-8')) as AgentScheduleConfig;
+    expect(raw.tasks.map((task) => task.id)).toEqual([
+      'marketer-daily-sns-trend-check',
+      'marketer-weekly-content-planning',
+      'marketer-comment-sweep',
+    ]);
   });
 });

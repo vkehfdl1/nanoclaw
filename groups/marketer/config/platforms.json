@@ -1,0 +1,167 @@
+{
+  "version": "1.0",
+  "description": "SNS platform research configurations for Marketer agent",
+  "platforms": {
+    "x": {
+      "name": "X (Twitter)",
+      "enabled": true,
+      "handle_env": "X_HANDLE",
+      "research_frequency": "daily",
+      "priority": 1,
+      "data_collection_method": "browser",
+      "post_limits": {
+        "text": 280,
+        "thread_item": 280,
+        "bio": 160
+      },
+      "content_formats": ["text", "thread", "image", "video", "poll"],
+      "best_practices": {
+        "optimal_post_times": ["08:00", "12:00", "17:00", "20:00"],
+        "hashtag_limit": 2,
+        "engagement_signals": ["likes", "retweets", "replies", "bookmarks", "views"]
+      },
+      "research_urls": {
+        "trending": "https://x.com/explore/tabs/trending",
+        "search_trending": "https://x.com/search?q={query}&src=trend_click&f=live",
+        "notifications": "https://x.com/notifications",
+        "analytics": "https://analytics.twitter.com"
+      },
+      "trend_selectors": {
+        "trending_items": "[data-testid='trend']",
+        "trend_name": "[data-testid='trendName']",
+        "trend_volume": "[data-testid='trendMetadata']"
+      },
+      "competitor_research": {
+        "check_followers": true,
+        "check_engagement_rate": true,
+        "sample_top_posts": 5
+      }
+    },
+    "linkedin": {
+      "name": "LinkedIn",
+      "enabled": true,
+      "handle_env": "LINKEDIN_HANDLE",
+      "research_frequency": "weekly",
+      "priority": 2,
+      "data_collection_method": "browser",
+      "post_limits": {
+        "text": 3000,
+        "article": 125000,
+        "bio": 2000
+      },
+      "content_formats": ["text", "image", "video", "article", "document", "poll", "event"],
+      "best_practices": {
+        "optimal_post_times": ["07:00", "10:00", "12:00", "17:00"],
+        "hashtag_limit": 5,
+        "engagement_signals": ["likes", "comments", "reposts", "impressions"]
+      },
+      "research_urls": {
+        "trending": "https://www.linkedin.com/feed/trending-articles/",
+        "search_content": "https://www.linkedin.com/search/results/content/?keywords={query}&origin=FACETED_SEARCH",
+        "search_hashtag": "https://www.linkedin.com/search/results/content/?keywords=%23{hashtag}",
+        "my_analytics": "https://www.linkedin.com/analytics/creator/content/"
+      },
+      "trend_selectors": {
+        "trending_articles": ".trending-articles__item",
+        "article_title": ".trending-articles__item-title",
+        "article_stats": ".trending-articles__item-stats"
+      },
+      "competitor_research": {
+        "check_followers": true,
+        "check_engagement_rate": true,
+        "sample_top_posts": 3
+      }
+    },
+    "threads": {
+      "name": "Threads",
+      "enabled": true,
+      "handle_env": "THREADS_HANDLE",
+      "research_frequency": "weekly",
+      "priority": 3,
+      "data_collection_method": "browser",
+      "post_limits": {
+        "text": 500,
+        "bio": 150
+      },
+      "content_formats": ["text", "image", "video", "link"],
+      "best_practices": {
+        "optimal_post_times": ["09:00", "13:00", "19:00"],
+        "hashtag_limit": 0,
+        "engagement_signals": ["likes", "replies", "reposts", "quotes", "views"]
+      },
+      "research_urls": {
+        "trending": "https://www.threads.net/search",
+        "search": "https://www.threads.net/search?q={query}&serp_type=default",
+        "notifications": "https://www.threads.net/activity"
+      },
+      "trend_selectors": {
+        "trending_topics": "[data-pressable-container] span",
+        "post_text": "span[dir='auto']",
+        "engagement_stats": "[role='button'] span"
+      },
+      "competitor_research": {
+        "check_followers": true,
+        "check_engagement_rate": false,
+        "sample_top_posts": 5
+      }
+    },
+    "instagram": {
+      "name": "Instagram",
+      "enabled": false,
+      "handle_env": "INSTAGRAM_HANDLE",
+      "research_frequency": "weekly",
+      "priority": 4,
+      "data_collection_method": "browser",
+      "post_limits": {
+        "caption": 2200,
+        "bio": 150,
+        "story_text": 250
+      },
+      "content_formats": ["image", "reel", "carousel", "story"],
+      "best_practices": {
+        "optimal_post_times": ["07:00", "11:00", "14:00", "19:00"],
+        "hashtag_limit": 30,
+        "engagement_signals": ["likes", "comments", "saves", "shares", "reach"]
+      },
+      "research_urls": {
+        "explore": "https://www.instagram.com/explore/",
+        "search": "https://www.instagram.com/explore/tags/{hashtag}/",
+        "reels": "https://www.instagram.com/reels/"
+      },
+      "competitor_research": {
+        "check_followers": true,
+        "check_engagement_rate": true,
+        "sample_top_posts": 5
+      }
+    }
+  },
+  "research_categories": {
+    "tech": {
+      "description": "Technology and software development topics",
+      "seed_keywords": ["AI", "software", "developer", "startup", "SaaS", "open source", "developer tools"],
+      "related_hashtags": {
+        "x": ["#buildinpublic", "#indiehacker", "#devtools", "#AI", "#startup"],
+        "linkedin": ["#technology", "#software", "#AI", "#startup", "#innovation"],
+        "threads": ["tech", "AI", "software", "startup"]
+      }
+    },
+    "ai_ml": {
+      "description": "Artificial intelligence and machine learning",
+      "seed_keywords": ["AI agent", "LLM", "machine learning", "Claude", "GPT", "automation", "AI tools"],
+      "related_hashtags": {
+        "x": ["#AI", "#LLM", "#AIagent", "#MachineLearning", "#Claude"],
+        "linkedin": ["#ArtificialIntelligence", "#MachineLearning", "#LLM", "#AItools"],
+        "threads": ["AI", "LLM", "claude", "chatgpt", "aitools"]
+      }
+    },
+    "productivity": {
+      "description": "Productivity tools and workflows",
+      "seed_keywords": ["productivity", "automation", "workflow", "tools", "efficiency", "second brain"],
+      "related_hashtags": {
+        "x": ["#productivity", "#pkm", "#secondbrain", "#workflow", "#automation"],
+        "linkedin": ["#productivity", "#workflowautomation", "#efficiency"],
+        "threads": ["productivity", "pkm", "tools", "secondbrain"]
+      }
+    }
+  }
+}
