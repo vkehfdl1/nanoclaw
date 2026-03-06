@@ -26,6 +26,7 @@ import {
   getAllRegisteredGroups,
   getAllTasks,
   getAllUniqueAgents,
+  getMessageById,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -216,6 +217,46 @@ function isChannelLevelMessage(msg: NewMessage): boolean {
   return !msg.thread_ts || msg.thread_ts === msg.id;
 }
 
+function mergeConversationContext(
+  channelMessages: NewMessage[],
+  threadMessages: NewMessage[],
+): NewMessage[] {
+  const merged = new Map<string, NewMessage>();
+  for (const msg of [...channelMessages, ...threadMessages]) {
+    merged.set(`${msg.chat_jid}::${msg.id}`, msg);
+  }
+  return [...merged.values()].sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function isReplyToAgentOwnedThread(
+  chatJid: string,
+  threadTs: string,
+  group: RegisteredGroup,
+): boolean {
+  if (threadTs === '__channel__') return false;
+  const root = getMessageById(chatJid, threadTs);
+  if (!root?.is_bot_message) return false;
+  return (root.agent_source ?? '').trim().toLowerCase() === group.name.trim().toLowerCase();
+}
+
+export function _mergeConversationContextForTests(
+  channelMessages: NewMessage[],
+  threadMessages: NewMessage[],
+): NewMessage[] {
+  return mergeConversationContext(channelMessages, threadMessages);
+}
+
+export function _isReplyToAgentOwnedThreadForTests(
+  chatJid: string,
+  threadTs: string,
+  group: RegisteredGroup,
+): boolean {
+  return isReplyToAgentOwnedThread(chatJid, threadTs, group);
+}
+
 /**
  * Process messages for a specific conversation (thread or channel-level batch).
  * Called by the GroupQueue when it's this group's turn.
@@ -241,7 +282,13 @@ async function processGroupMessages(
   if (assigned) {
     // Assigned channel: unified context — all messages (channel + threads) since cursor
     const sinceTimestamp = getAgentCursor(agentFolder, chatJid);
-    contextMessages = getMessagesSince(chatJid, sinceTimestamp);
+    const channelMessages = getMessagesSince(chatJid, sinceTimestamp);
+    if (threadTs !== '__channel__') {
+      const threadMessages = getThreadMessages(chatJid, threadTs);
+      contextMessages = mergeConversationContext(channelMessages, threadMessages);
+    } else {
+      contextMessages = channelMessages;
+    }
   } else {
     // Cross-channel: thread context only
     contextMessages = getThreadMessages(chatJid, threadTs);
@@ -592,7 +639,8 @@ async function startMessageLoop(): Promise<void> {
               const hasMatch = convoMessages.some((m) =>
                 evaluateGateway(m, group, chatJid),
               );
-              if (!hasMatch) continue;
+              const ownsThread = agentAssigned && isReplyToAgentOwnedThread(chatJid, threadTs, group);
+              if (!hasMatch && !ownsThread) continue;
             }
 
             if (agentAssigned) {

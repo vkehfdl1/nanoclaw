@@ -271,8 +271,8 @@ describe('storeChatMetadata', () => {
 
 // --- Registered group lookups ---
 
-describe('registered_groups multi-channel lookups', () => {
-  it('allows registering the same folder for multiple channel JIDs', () => {
+describe('registered_groups one-to-one lookups', () => {
+  it('moves an agent folder to the newest registered channel JID', () => {
     setRegisteredGroup('slack:C111', {
       name: 'PM Agent',
       folder: 'pm-autorag',
@@ -295,13 +295,12 @@ describe('registered_groups multi-channel lookups', () => {
     });
 
     const all = getAllRegisteredGroups();
-    expect(all['slack:C111']).toBeDefined();
     expect(all['slack:C222']).toBeDefined();
-    expect(all['slack:C111'].folder).toBe('pm-autorag');
     expect(all['slack:C222'].folder).toBe('pm-autorag');
+    expect(all['slack:C111']).toBeUndefined();
   });
 
-  it('getChannelsForAgent returns all registered channel JIDs for a folder', () => {
+  it('getChannelsForAgent returns the single registered channel JID for a folder', () => {
     setRegisteredGroup('slack:C111', {
       name: 'PM Agent',
       folder: 'pm-autorag',
@@ -318,20 +317,12 @@ describe('registered_groups multi-channel lookups', () => {
       added_at: '2024-01-01T00:00:00.000Z',
       gateway: { rules: [{ match: 'self_mention' }] },
     });
-    setRegisteredGroup('slack:C333', {
-      name: 'Marketer',
-      folder: 'marketer',
-      trigger: '@marketer',
-      aliases: ['marketer'],
-      added_at: '2024-01-01T00:00:00.000Z',
-      gateway: { rules: [{ match: 'self_mention' }] },
-    });
 
     const channels = getChannelsForAgent('pm-autorag');
-    expect(channels).toEqual(['slack:C111', 'slack:C222']);
+    expect(channels).toEqual(['slack:C222']);
   });
 
-  it('getAgentsByChannel returns all registered agents for a channel JID', () => {
+  it('replaces an existing channel agent when the channel is re-registered', () => {
     setRegisteredGroup('slack:C111', {
       name: 'PM Agent',
       folder: 'pm-autorag',
@@ -352,12 +343,13 @@ describe('registered_groups multi-channel lookups', () => {
     });
 
     const agents = getAgentsByChannel('slack:C111');
-    expect(agents).toHaveLength(2);
-    expect(agents.map((a) => a.folder)).toEqual(['pm-autorag', 'marketer']);
-    expect(agents.map((a) => a.role)).toEqual(['pm-agent', 'marketer']);
+    expect(agents).toHaveLength(1);
+    expect(agents[0].folder).toBe('marketer');
+    expect(agents[0].role).toBe('marketer');
+    expect(getChannelsForAgent('pm-autorag')).toEqual([]);
   });
 
-  it('upserts by (jid, folder) without dropping other channel agents', () => {
+  it('updates an existing channel registration in place', () => {
     setRegisteredGroup('slack:C111', {
       name: 'PM Agent',
       folder: 'pm-autorag',
@@ -367,17 +359,6 @@ describe('registered_groups multi-channel lookups', () => {
       gateway: { rules: [{ match: 'self_mention' }] },
       role: 'pm-agent',
     });
-    setRegisteredGroup('slack:C111', {
-      name: 'Marketer',
-      folder: 'marketer',
-      trigger: '@marketer',
-      aliases: ['marketer'],
-      added_at: '2024-01-01T00:00:01.000Z',
-      gateway: { rules: [{ match: 'self_mention' }] },
-      role: 'marketer',
-    });
-
-    // Update only the PM registration row for this channel
     setRegisteredGroup('slack:C111', {
       name: 'Young-gu',
       folder: 'pm-autorag',
@@ -390,16 +371,10 @@ describe('registered_groups multi-channel lookups', () => {
     });
 
     const agents = getAgentsByChannel('slack:C111');
-    expect(agents).toHaveLength(2);
-    expect(agents.map((a) => a.folder)).toEqual(['marketer', 'pm-autorag']);
-
-    const pm = agents.find((a) => a.folder === 'pm-autorag');
-    const marketer = agents.find((a) => a.folder === 'marketer');
-    expect(pm).toBeDefined();
-    expect(pm!.name).toBe('Young-gu');
-    expect(pm!.requiresTrigger).toBe(false);
-    expect(marketer).toBeDefined();
-    expect(marketer!.name).toBe('Marketer');
+    expect(agents).toHaveLength(1);
+    expect(agents[0].folder).toBe('pm-autorag');
+    expect(agents[0].name).toBe('Young-gu');
+    expect(agents[0].requiresTrigger).toBe(false);
   });
 });
 
