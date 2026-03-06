@@ -963,7 +963,13 @@ describe('host repo IPC tasks', () => {
 
     expect(runner).toHaveBeenCalledWith(
       'gh',
-      ['issue', 'comment', '17', '--body', 'Initial PM triage complete.'],
+      [
+        'issue',
+        'comment',
+        '17',
+        '--body',
+        'Initial PM triage complete.\n\n<!-- nanoclaw:github-event -->',
+      ],
       expect.objectContaining({ cwd: repoPath }),
     );
 
@@ -1110,7 +1116,14 @@ describe('host repo IPC tasks', () => {
 
     expect(runner).toHaveBeenCalledWith(
       'gh',
-      ['pr', 'review', '42', '--comment', '--body', reviewBody],
+      [
+        'pr',
+        'review',
+        '42',
+        '--comment',
+        '--body',
+        `${reviewBody}\n\n<!-- nanoclaw:github-event -->`,
+      ],
       expect.objectContaining({ cwd: repoPath }),
     );
 

@@ -64,6 +64,25 @@ let slack: SlackChannel | undefined;
 let githubWebhookServer: Server | null = null;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const recentIpcDeliveries = new Map<string, number>();
+
+function makeDeliveryKey(groupFolder: string, chatJid: string, threadTs?: string): string {
+  return `${groupFolder}::${chatJid}::${threadTs ?? '__channel__'}`;
+}
+
+function noteIpcDelivery(groupFolder: string, chatJid: string, threadTs?: string): void {
+  recentIpcDeliveries.set(makeDeliveryKey(groupFolder, chatJid, threadTs), Date.now());
+}
+
+function hadIpcDeliverySince(
+  groupFolder: string,
+  chatJid: string,
+  threadTs: string | undefined,
+  sinceMs: number,
+): boolean {
+  const deliveredAt = recentIpcDeliveries.get(makeDeliveryKey(groupFolder, chatJid, threadTs));
+  return deliveredAt !== undefined && deliveredAt >= sinceMs;
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -260,6 +279,23 @@ export function _isReplyToAgentOwnedThreadForTests(
   return isReplyToAgentOwnedThread(chatJid, threadTs, group);
 }
 
+export function _hadIpcDeliverySinceForTests(
+  groupFolder: string,
+  chatJid: string,
+  threadTs: string | undefined,
+  sinceMs: number,
+): boolean {
+  return hadIpcDeliverySince(groupFolder, chatJid, threadTs, sinceMs);
+}
+
+export function _noteIpcDeliveryForTests(
+  groupFolder: string,
+  chatJid: string,
+  threadTs?: string,
+): void {
+  noteIpcDelivery(groupFolder, chatJid, threadTs);
+}
+
 /**
  * Process messages for a specific conversation (thread or channel-level batch).
  * Called by the GroupQueue when it's this group's turn.
@@ -357,6 +393,7 @@ async function processGroupMessages(
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const runStartedAt = Date.now();
 
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -374,17 +411,29 @@ async function processGroupMessages(
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       const text = formatOutbound(raw);
+      const ipcDelivered = hadIpcDeliverySince(group.folder, chatJid, replyThreadTs, runStartedAt);
       logger.info(
         {
           group: group.name,
           removedInternal: text !== raw.trim(),
           preview: text.slice(0, 200),
+          userVisibleDelivery: ipcDelivered ? 'ipc' : 'logs_only',
         },
         'Agent output processed',
       );
       if (text) {
-        await sendToChannel(channel, chatJid, text, group.name, replyThreadTs);
-        outputSentToUser = true;
+        if (ipcDelivered) {
+          outputSentToUser = true;
+          logger.info(
+            { group: group.name, chatJid, threadTs: replyThreadTs },
+            'Retaining final output for logs because IPC message was already delivered',
+          );
+        } else {
+          logger.info(
+            { group: group.name, chatJid, threadTs: replyThreadTs },
+            'Retaining final output for logs only; no automatic Slack delivery',
+          );
+        }
       }
       resetIdleTimer();
     }
@@ -809,6 +858,9 @@ async function main(): Promise<void> {
       const outbound = formatOutbound(text);
       if (!outbound) return Promise.resolve();
       return channel.sendMessage(jid, outbound, options);
+    },
+    onMessageSent: (sourceGroup, jid, threadTs) => {
+      noteIpcDelivery(sourceGroup, jid, threadTs);
     },
     sendFile: (jid, filePath, comment) => {
       const channel = findChannel(channels, jid);

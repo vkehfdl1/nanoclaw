@@ -115,7 +115,7 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or genuinely separate follow-up messages. The host keeps the current Slack thread when this run already has one. Scheduled tasks do not auto-deliver their final output, so this tool is required for any user-visible scheduled-task notification.",
+  "Send a user-visible text message to the user or group immediately while you're still running. This is the only text delivery path to Slack. Use it for any reply or progress update you actually want the user to see. The host keeps the current Slack thread when this run already has one. Final model output is kept for logs/state only and is never auto-delivered to Slack.",
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
@@ -210,7 +210,7 @@ If unsure which mode to use, you can ask the user. Examples:
 - "Follow up on my request" \u2192 group (needs to know what was requested)
 - "Generate a daily report" \u2192 isolated (just needs instructions in prompt)
 
-  MESSAGING BEHAVIOR - Scheduled tasks do NOT auto-deliver their final output to the user or group. Final output is kept for task logs/state only. If a scheduled task should notify the user, it must call send_message explicitly. Include guidance in the prompt about whether the agent should:
+MESSAGING BEHAVIOR - Final output is kept for task logs/state only and is never auto-delivered to Slack. If a scheduled task should notify the user or group, it must call send_message explicitly. Include guidance in the prompt about whether the agent should:
   \u2022 Always send a message (e.g., reminders, daily briefings)
   \u2022 Only send a message when there's something to report (e.g., "notify me if...")
   \u2022 Never send a message (background maintenance tasks)

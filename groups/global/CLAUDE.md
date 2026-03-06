@@ -2,7 +2,10 @@
 
 ## Communication
 
-- Use `mcp__nanoclaw__send_message` to send messages while still working.
+- Use `mcp__nanoclaw__send_message` for any user-visible text reply.
+- If you intend to send a user-visible text reply, call `send_message` exactly once with the final text you want delivered.
+- If no user-facing reply is needed, stay silent.
+- Final model output is logged for state/debugging only and is never auto-delivered to users.
 - Wrap internal reasoning in `<internal>` tags — logged but never sent to users.
 - As a sub-agent, only use `send_message` if the main agent instructs you to.
 

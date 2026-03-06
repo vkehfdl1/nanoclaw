@@ -39,6 +39,7 @@ vi.mock('fs', async () => {
       ...actual,
       existsSync: vi.fn(() => false),
       mkdirSync: vi.fn(),
+      cpSync: vi.fn(),
       writeFileSync: vi.fn(),
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
@@ -291,6 +292,35 @@ describe('container-runner timeout behavior', () => {
     expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.venv');
     expect(tmpfsPaths).toContain('/workspace/extra/autorag-research/.git/objects');
     expect(tmpfsPaths.some((p) => p.includes('../bad'))).toBe(false);
+  });
+
+  it('refreshes the per-group agent runner snapshot from the latest source', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => (
+      String(filePath).endsWith('/container/agent-runner/src')
+    ));
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-sync',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    expect(vi.mocked(fs.cpSync)).toHaveBeenCalledWith(
+      expect.stringMatching(/container\/agent-runner\/src$/),
+      '/tmp/nanoclaw-test-data/sessions/test-group/agent-runner-src',
+      expect.objectContaining({ recursive: true, force: true }),
+    );
   });
 
   it('runs javascript task snippets with node as the container entrypoint', async () => {

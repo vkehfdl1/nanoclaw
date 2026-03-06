@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestDatabase, storeChatMetadata, storeMessage } from './db.js';
 import {
+  _hadIpcDeliverySinceForTests,
   _isReplyToAgentOwnedThreadForTests,
   _mergeConversationContextForTests,
+  _noteIpcDeliveryForTests,
   _setRegisteredGroups,
 } from './index.js';
 import type { RegisteredGroup } from './types.js';
@@ -98,5 +100,21 @@ describe('thread affinity helpers', () => {
     );
 
     expect(merged.map((msg) => msg.id)).toEqual(['thread-1', 'reply-1']);
+  });
+
+  it('tracks IPC deliveries by conversation key', () => {
+    const beforeDelivery = Date.now();
+    expect(
+      _hadIpcDeliverySinceForTests('pm-autorag', 'slack:C111', 'thread-1', beforeDelivery),
+    ).toBe(false);
+
+    _noteIpcDeliveryForTests('pm-autorag', 'slack:C111', 'thread-1');
+
+    expect(
+      _hadIpcDeliverySinceForTests('pm-autorag', 'slack:C111', 'thread-1', beforeDelivery),
+    ).toBe(true);
+    expect(
+      _hadIpcDeliverySinceForTests('pm-autorag', 'slack:C111', 'thread-2', beforeDelivery),
+    ).toBe(false);
   });
 });

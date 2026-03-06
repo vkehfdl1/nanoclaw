@@ -225,7 +225,22 @@ export class SlackChannel implements Channel {
       if (options?.threadTs) {
         payload.thread_ts = options.threadTs;
       }
-      await this.app.client.chat.postMessage(payload);
+      const response = await this.app.client.chat.postMessage(payload);
+      const sentTs = typeof response.ts === 'string' ? response.ts : undefined;
+      if (sentTs) {
+        this.opts.onMessage(jid, {
+          id: sentTs,
+          chat_jid: jid,
+          sender: this.botUserId || 'unknown',
+          sender_name: assistantLabel,
+          content: payload.text,
+          timestamp: this.toIsoTimestamp(sentTs),
+          is_from_me: true,
+          is_bot_message: true,
+          agent_source: assistantLabel,
+          thread_ts: options?.threadTs || sentTs,
+        });
+      }
       logger.info(
         {
           jid,

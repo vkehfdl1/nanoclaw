@@ -295,6 +295,46 @@ describe('SlackChannel', () => {
       );
     });
 
+    it('stores sent thread replies as bot messages via onMessage', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      await channel.sendMessage(REGISTERED_JID, 'Thread reply', {
+        threadTs: '1700000050.000001',
+      });
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        REGISTERED_JID,
+        expect.objectContaining({
+          id: '1700000000.000001',
+          is_from_me: true,
+          is_bot_message: true,
+          agent_source: 'Test Channel',
+          thread_ts: '1700000050.000001',
+          content: '*Test Channel:* Thread reply',
+        }),
+      );
+    });
+
+    it('stores sent top-level messages with their own ts as thread_ts', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await connectChannel(channel);
+
+      await channel.sendMessage(REGISTERED_JID, 'Top-level reply');
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        REGISTERED_JID,
+        expect.objectContaining({
+          id: '1700000000.000001',
+          is_bot_message: true,
+          thread_ts: '1700000000.000001',
+          content: '*Test Channel:* Top-level reply',
+        }),
+      );
+    });
+
     it('does not send messages when formatOutbound returns empty string', async () => {
       const { formatOutbound } = await import('../router.js');
       vi.mocked(formatOutbound).mockReturnValueOnce('');

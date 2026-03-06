@@ -27,6 +27,7 @@ import { OutboundMessageOptions, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, options?: OutboundMessageOptions) => Promise<void>;
+  onMessageSent?: (sourceGroup: string, chatJid: string, threadTs?: string) => void;
   sendFile: (jid: string, filePath: string, comment?: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
@@ -513,6 +514,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       threadTs: typeof data.threadTs === 'string' ? data.threadTs : undefined,
                       agentLabel: typeof data.sender === 'string' ? data.sender : undefined,
                     });
+                    deps.onMessageSent?.(
+                      sourceGroup,
+                      data.chatJid,
+                      typeof data.threadTs === 'string' ? data.threadTs : undefined,
+                    );
                     logger.info(
                       {
                         chatJid: data.chatJid,
