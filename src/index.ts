@@ -5,6 +5,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
+  IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
   SLACK_APP_TOKEN,
@@ -47,7 +48,13 @@ import { resolveGroupFolderPath } from './group-folder.js';
 import { bootstrapAllAgentSchedules } from './agent-schedule-bootstrap.js';
 import { startIpcWatcher } from './ipc.js';
 import { prependChannelMembersToPrompt } from './channel-members.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  ReplyAuditParseResult,
+  findChannel,
+  formatMessages,
+  formatOutbound,
+  parseReplyAudit,
+} from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -65,6 +72,26 @@ let githubWebhookServer: Server | null = null;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 const recentIpcDeliveries = new Map<string, number>();
+const INTERACTIVE_REPLY_AUDIT_INSTRUCTIONS = [
+  '[INTERACTIVE REPLY CONTRACT]',
+  'This run came from a direct user conversation.',
+  'Before each query ends, decide whether this turn needs a user-visible reply.',
+  'If a visible reply is needed, call mcp__nanoclaw__send_message exactly once with the final user-visible text before you finish.',
+  'If no visible reply is needed, do not call send_message.',
+  'Final model output is never auto-delivered to the user.',
+  'End every query with exactly one <internal> JSON object using this schema:',
+  '{"reply_audit":{"reply_needed":true|false,"reply_sent":true|false,"reason":"short reason"}}',
+  'Set reply_sent=true only if you actually called send_message in that query.',
+  'If the user directly asked you for something and you are unsure, prefer reply_needed=true.',
+].join('\n');
+
+type ReplyAuditCorrectionMode = 'reassess_reply_need' | 'send_visible_reply';
+
+interface ReplyAuditDecision {
+  action: 'none' | 'correct' | 'protocol_violation';
+  reason: string;
+  correctionMode?: ReplyAuditCorrectionMode;
+}
 
 function makeDeliveryKey(groupFolder: string, chatJid: string, threadTs?: string): string {
   return `${groupFolder}::${chatJid}::${threadTs ?? '__channel__'}`;
@@ -82,6 +109,105 @@ function hadIpcDeliverySince(
 ): boolean {
   const deliveredAt = recentIpcDeliveries.get(makeDeliveryKey(groupFolder, chatJid, threadTs));
   return deliveredAt !== undefined && deliveredAt >= sinceMs;
+}
+
+async function waitForRecentIpcDelivery(
+  groupFolder: string,
+  chatJid: string,
+  threadTs: string | undefined,
+  sinceMs: number,
+): Promise<boolean> {
+  if (hadIpcDeliverySince(groupFolder, chatJid, threadTs, sinceMs)) {
+    return true;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, IPC_POLL_INTERVAL + 100));
+  return hadIpcDeliverySince(groupFolder, chatJid, threadTs, sinceMs);
+}
+
+function prependInteractiveReplyAuditContract(prompt: string): string {
+  return `${INTERACTIVE_REPLY_AUDIT_INSTRUCTIONS}\n\n${prompt}`;
+}
+
+function buildReplyAuditCorrectionPrompt(mode: ReplyAuditCorrectionMode): string {
+  if (mode === 'send_visible_reply') {
+    return [
+      '[HOST REPLY AUDIT CORRECTION]',
+      'The previous query decided that a user-visible reply was needed, but no visible reply was delivered.',
+      'Do not redo the work.',
+      'Send the already-prepared user-visible reply now via mcp__nanoclaw__send_message.',
+      'If you no longer have the exact reply, send a short apology plus the current answer/status instead.',
+      'Then finish with exactly one <internal> JSON object using the reply_audit schema.',
+    ].join('\n');
+  }
+
+  return [
+    '[HOST REPLY AUDIT CORRECTION]',
+    'The previous query finished without a valid reply_audit footer and no visible reply was delivered.',
+    'Do not redo the work.',
+    'Decide now whether this turn needs a user-visible reply.',
+    'If a visible reply is needed, send it now via mcp__nanoclaw__send_message.',
+    'If no visible reply is needed, stay silent.',
+    'Then finish with exactly one <internal> JSON object using the reply_audit schema.',
+  ].join('\n');
+}
+
+function evaluateReplyAuditOutcome(
+  auditResult: ReplyAuditParseResult,
+  visibleReplyDelivered: boolean,
+  correctionAttempted: boolean,
+  expectedVisibleReply: boolean,
+): ReplyAuditDecision {
+  if (expectedVisibleReply) {
+    if (visibleReplyDelivered) {
+      return auditResult.kind === 'valid'
+        ? { action: 'none', reason: 'corrected_visible_reply_delivered' }
+        : { action: 'protocol_violation', reason: 'corrected_visible_reply_delivered_without_valid_reply_audit' };
+    }
+
+    return correctionAttempted
+      ? { action: 'protocol_violation', reason: 'corrective_visible_reply_still_missing' }
+      : {
+          action: 'correct',
+          reason: 'reply_needed_but_no_visible_reply_delivered',
+          correctionMode: 'send_visible_reply',
+        };
+  }
+
+  if (auditResult.kind === 'valid') {
+    if (!auditResult.audit.reply_needed) {
+      return { action: 'none', reason: `silent_ok:${auditResult.audit.reason}` };
+    }
+    if (visibleReplyDelivered) {
+      return { action: 'none', reason: `visible_reply_delivered:${auditResult.audit.reason}` };
+    }
+
+    return correctionAttempted
+      ? { action: 'protocol_violation', reason: 'reply_needed_but_no_visible_reply_delivered_after_correction' }
+      : {
+          action: 'correct',
+          reason: auditResult.audit.reply_sent
+            ? 'reply_needed_claimed_sent_but_no_visible_delivery'
+            : 'reply_needed_but_send_message_missing',
+          correctionMode: 'send_visible_reply',
+        };
+  }
+
+  const invalidReason = auditResult.kind === 'missing'
+    ? 'missing_reply_audit'
+    : `malformed_reply_audit:${auditResult.error}`;
+
+  if (visibleReplyDelivered) {
+    return { action: 'protocol_violation', reason: invalidReason };
+  }
+
+  return correctionAttempted
+    ? { action: 'protocol_violation', reason: `${invalidReason}:after_correction` }
+    : {
+        action: 'correct',
+        reason: invalidReason,
+        correctionMode: 'reassess_reply_need',
+      };
 }
 
 function loadState(): void {
@@ -253,6 +379,17 @@ function mergeConversationContext(
   });
 }
 
+function resolveReplyThreadTs(
+  threadTs: string,
+  contextMessages: NewMessage[],
+  replyAnchorTs?: string,
+): string | undefined {
+  if (threadTs !== '__channel__') return threadTs;
+  return replyAnchorTs
+    ?? contextMessages.find((msg) => isChannelLevelMessage(msg))?.id
+    ?? contextMessages[0]?.id;
+}
+
 function isReplyToAgentOwnedThread(
   chatJid: string,
   threadTs: string,
@@ -269,6 +406,14 @@ export function _mergeConversationContextForTests(
   threadMessages: NewMessage[],
 ): NewMessage[] {
   return mergeConversationContext(channelMessages, threadMessages);
+}
+
+export function _resolveReplyThreadTsForTests(
+  threadTs: string,
+  contextMessages: NewMessage[],
+  replyAnchorTs?: string,
+): string | undefined {
+  return resolveReplyThreadTs(threadTs, contextMessages, replyAnchorTs);
 }
 
 export function _isReplyToAgentOwnedThreadForTests(
@@ -296,6 +441,20 @@ export function _noteIpcDeliveryForTests(
   noteIpcDelivery(groupFolder, chatJid, threadTs);
 }
 
+export function _evaluateReplyAuditOutcomeForTests(
+  auditResult: ReplyAuditParseResult,
+  visibleReplyDelivered: boolean,
+  correctionAttempted: boolean,
+  expectedVisibleReply: boolean,
+): ReplyAuditDecision {
+  return evaluateReplyAuditOutcome(
+    auditResult,
+    visibleReplyDelivered,
+    correctionAttempted,
+    expectedVisibleReply,
+  );
+}
+
 /**
  * Process messages for a specific conversation (thread or channel-level batch).
  * Called by the GroupQueue when it's this group's turn.
@@ -304,6 +463,7 @@ async function processGroupMessages(
   chatJid: string,
   agentFolder: string,
   threadTs: string,
+  replyAnchorTs?: string,
 ): Promise<boolean> {
   const group = findRegisteredAgent(chatJid, agentFolder);
   if (!group) return true;
@@ -369,12 +529,11 @@ async function processGroupMessages(
     formatMessages(contextMessages),
     SLACK_BOT_TOKEN,
   );
+  const interactivePrompt = prependInteractiveReplyAuditContract(prompt);
 
   // For channel-level conversations, the reply goes to a thread under the first channel-level message
   // For thread conversations, the reply goes to the same thread
-  const replyThreadTs = threadTs === '__channel__'
-    ? (contextMessages.find((m) => isChannelLevelMessage(m))?.id ?? contextMessages[0]?.id)
-    : threadTs;
+  const replyThreadTs = resolveReplyThreadTs(threadTs, contextMessages, replyAnchorTs);
 
   // Advance cursor for assigned channels (unified session tracks all messages)
   const previousCursor = getAgentCursor(agentFolder, chatJid);
@@ -394,6 +553,10 @@ async function processGroupMessages(
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const runStartedAt = Date.now();
+  let currentQueryStartedAt = runStartedAt;
+  let latestReplyAudit: ReplyAuditParseResult = { kind: 'missing' };
+  let correctionAttemptedForTurn = false;
+  let expectedVisibleReplyForQuery = false;
 
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -403,18 +566,25 @@ async function processGroupMessages(
     }, IDLE_TIMEOUT);
   };
 
+  const clearIdleTimer = () => {
+    if (!idleTimer) return;
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
-  let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, replyThreadTs, async (result) => {
-    if (result.result) {
+  const output = await runAgent(group, interactivePrompt, chatJid, replyThreadTs, async (result) => {
+    if (result.result !== null) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       const text = formatOutbound(raw);
-      const ipcDelivered = hadIpcDeliverySince(group.folder, chatJid, replyThreadTs, runStartedAt);
+      latestReplyAudit = parseReplyAudit(raw);
+      const ipcDelivered = hadIpcDeliverySince(group.folder, chatJid, replyThreadTs, currentQueryStartedAt);
       logger.info(
         {
           group: group.name,
+          replyAudit: latestReplyAudit.kind,
           removedInternal: text !== raw.trim(),
           preview: text.slice(0, 200),
           userVisibleDelivery: ipcDelivered ? 'ipc' : 'logs_only',
@@ -423,7 +593,6 @@ async function processGroupMessages(
       );
       if (text) {
         if (ipcDelivered) {
-          outputSentToUser = true;
           logger.info(
             { group: group.name, chatJid, threadTs: replyThreadTs },
             'Retaining final output for logs because IPC message was already delivered',
@@ -434,24 +603,112 @@ async function processGroupMessages(
             'Retaining final output for logs only; no automatic Slack delivery',
           );
         }
+      } else {
+        logger.info(
+          { group: group.name, chatJid, threadTs: replyThreadTs },
+          'Final output contained no user-visible text after sanitization',
+        );
       }
-      resetIdleTimer();
-    }
-
-    if (result.status === 'success') {
-      queue.notifyIdle(group.folder);
     }
 
     if (result.status === 'error') {
       hadError = true;
+      return;
+    }
+
+    if (result.status === 'success' && result.result === null) {
+      let visibleReplyDelivered = hadIpcDeliverySince(
+        group.folder,
+        chatJid,
+        replyThreadTs,
+        currentQueryStartedAt,
+      );
+      if (
+        !visibleReplyDelivered
+        && (
+          expectedVisibleReplyForQuery
+          || latestReplyAudit.kind !== 'valid'
+          || latestReplyAudit.audit.reply_needed
+        )
+      ) {
+        visibleReplyDelivered = await waitForRecentIpcDelivery(
+          group.folder,
+          chatJid,
+          replyThreadTs,
+          currentQueryStartedAt,
+        );
+      }
+      const decision = evaluateReplyAuditOutcome(
+        latestReplyAudit,
+        visibleReplyDelivered,
+        correctionAttemptedForTurn,
+        expectedVisibleReplyForQuery,
+      );
+
+      if (decision.action === 'correct' && decision.correctionMode) {
+        correctionAttemptedForTurn = true;
+        expectedVisibleReplyForQuery = decision.correctionMode === 'send_visible_reply';
+        latestReplyAudit = { kind: 'missing' };
+        currentQueryStartedAt = Date.now();
+        clearIdleTimer();
+
+        const correctionQueued = queue.sendMessage(
+          group.folder,
+          chatJid,
+          replyThreadTs ?? '__channel__',
+          buildReplyAuditCorrectionPrompt(decision.correctionMode),
+        );
+
+        if (correctionQueued) {
+          logger.warn(
+            {
+              group: group.name,
+              chatJid,
+              threadTs: replyThreadTs,
+              reason: decision.reason,
+              correctionMode: decision.correctionMode,
+            },
+            'Queued reply audit correction',
+          );
+          return;
+        }
+
+        logger.error(
+          {
+            group: group.name,
+            chatJid,
+            threadTs: replyThreadTs,
+            reason: decision.reason,
+            correctionMode: decision.correctionMode,
+          },
+          'Failed to queue reply audit correction',
+        );
+      } else if (decision.action === 'protocol_violation') {
+        logger.error(
+          {
+            group: group.name,
+            chatJid,
+            threadTs: replyThreadTs,
+            reason: decision.reason,
+          },
+          'Reply audit protocol violation',
+        );
+      }
+
+      correctionAttemptedForTurn = false;
+      expectedVisibleReplyForQuery = false;
+      latestReplyAudit = { kind: 'missing' };
+      currentQueryStartedAt = Date.now();
+      queue.notifyIdle(group.folder);
+      resetIdleTimer();
     }
   });
 
   await channel.setTyping?.(chatJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
+  clearIdleTimer();
 
   if (output === 'error' || hadError) {
-    if (outputSentToUser) {
+    if (hadIpcDeliverySince(group.folder, chatJid, replyThreadTs, runStartedAt)) {
       logger.warn({ group: group.name }, 'Agent error after output was sent, skipping cursor rollback to prevent duplicates');
       return true;
     }
@@ -568,13 +825,14 @@ async function runAgent(
 /**
  * Group messages into conversations by thread.
  * Channel-level messages (thread_ts === id) within the same chatJid are batched
- * together under the first message's ts as the thread anchor.
+ * together under a synthetic "__channel__" conversation key while preserving
+ * the first message id as the reply anchor.
  * Thread replies are grouped by their thread_ts.
  */
 function groupByConversation(
   messages: NewMessage[],
-): Map<string, { chatJid: string; threadTs: string; messages: NewMessage[] }> {
-  const conversations = new Map<string, { chatJid: string; threadTs: string; messages: NewMessage[] }>();
+): Map<string, { chatJid: string; threadTs: string; replyAnchorTs?: string; messages: NewMessage[] }> {
+  const conversations = new Map<string, { chatJid: string; threadTs: string; replyAnchorTs?: string; messages: NewMessage[] }>();
   // Collect channel-level messages per chatJid for batching
   const channelBatches = new Map<string, NewMessage[]>();
 
@@ -593,6 +851,7 @@ function groupByConversation(
         conversations.set(key, {
           chatJid: msg.chat_jid,
           threadTs: msg.thread_ts!,
+          replyAnchorTs: msg.thread_ts!,
           messages: [msg],
         });
       }
@@ -607,12 +866,13 @@ function groupByConversation(
     if (existing) {
       existing.messages.push(...batch);
     } else {
-      conversations.set(key, {
-        chatJid,
-        threadTs: '__channel__',
-        messages: batch,
-      });
-    }
+        conversations.set(key, {
+          chatJid,
+          threadTs: '__channel__',
+          replyAnchorTs: batch[0]?.id,
+          messages: batch,
+        });
+      }
   }
 
   return conversations;
@@ -697,7 +957,10 @@ async function startMessageLoop(): Promise<void> {
 
             if (agentAssigned) {
               // Assigned channel: unified session, always enqueue (no pipe attempt)
-              queue.enqueueMessageCheck(chatJid, agentFolder, threadTs, true);
+              queue.enqueueMessageCheck(chatJid, agentFolder, threadTs, {
+                isAssigned: true,
+                replyAnchorTs: convo.replyAnchorTs,
+              });
             } else if (threadTs === '__channel__') {
               // Cross-channel, channel-level: always enqueue
               queue.enqueueMessageCheck(chatJid, agentFolder, threadTs);
@@ -709,8 +972,9 @@ async function startMessageLoop(): Promise<void> {
                 formatMessages(threadMessages),
                 SLACK_BOT_TOKEN,
               );
+              const interactiveFollowUp = prependInteractiveReplyAuditContract(formatted);
 
-              if (queue.sendMessage(agentFolder, chatJid, threadTs, formatted)) {
+              if (queue.sendMessage(agentFolder, chatJid, threadTs, interactiveFollowUp)) {
                 logger.debug(
                   { chatJid, agentFolder, threadTs, count: threadMessages.length },
                   'Piped thread messages to active container',
@@ -767,7 +1031,10 @@ function recoverPendingMessages(): void {
       // Group pending messages by conversation for proper thread routing
       const conversations = groupByConversation(pending);
       for (const [, convo] of conversations) {
-        queue.enqueueMessageCheck(convo.chatJid, group.folder, convo.threadTs, true);
+        queue.enqueueMessageCheck(convo.chatJid, group.folder, convo.threadTs, {
+          isAssigned: true,
+          replyAnchorTs: convo.replyAnchorTs,
+        });
       }
     }
   }

@@ -17,6 +17,12 @@ const BASE_RETRY_MS = 5000;
 interface PendingConversation {
   chatJid: string;
   threadTs: string;
+  replyAnchorTs?: string;
+}
+
+interface EnqueueMessageOptions {
+  isAssigned?: boolean;
+  replyAnchorTs?: string;
 }
 
 interface GroupState {
@@ -37,7 +43,12 @@ export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
   private waitingGroups: string[] = [];
-  private processMessagesFn: ((chatJid: string, groupKey: string, threadTs: string) => Promise<boolean>) | null = null;
+  private processMessagesFn: ((
+    chatJid: string,
+    groupKey: string,
+    threadTs: string,
+    replyAnchorTs?: string,
+  ) => Promise<boolean>) | null = null;
   private shuttingDown = false;
 
   private getGroup(groupKey: string): GroupState {
@@ -62,20 +73,39 @@ export class GroupQueue {
   }
 
   setProcessMessagesFn(
-    fn: (chatJid: string, groupKey: string, threadTs: string) => Promise<boolean>,
+    fn: (
+      chatJid: string,
+      groupKey: string,
+      threadTs: string,
+      replyAnchorTs?: string,
+    ) => Promise<boolean>,
   ): void {
     this.processMessagesFn = fn;
   }
 
-  enqueueMessageCheck(chatJid: string, groupKey: string, threadTs: string, isAssigned?: boolean): void {
+  enqueueMessageCheck(
+    chatJid: string,
+    groupKey: string,
+    threadTs: string,
+    isAssignedOrOptions?: boolean | EnqueueMessageOptions,
+  ): void {
     if (this.shuttingDown) return;
 
+    const options = typeof isAssignedOrOptions === 'boolean'
+      ? { isAssigned: isAssignedOrOptions }
+      : (isAssignedOrOptions ?? {});
     const state = this.getGroup(groupKey);
-    const alreadyQueued = state.pendingConversations.some(
+    const existing = state.pendingConversations.find(
       (c) => c.chatJid === chatJid && c.threadTs === threadTs,
     );
-    if (!alreadyQueued) {
-      state.pendingConversations.push({ chatJid, threadTs });
+    if (!existing) {
+      state.pendingConversations.push({
+        chatJid,
+        threadTs,
+        replyAnchorTs: options.replyAnchorTs,
+      });
+    } else if (!existing.replyAnchorTs && options.replyAnchorTs) {
+      existing.replyAnchorTs = options.replyAnchorTs;
     }
 
     if (state.active) {
@@ -83,7 +113,7 @@ export class GroupQueue {
       // channel/thread, preempt so the queued conversation starts sooner.
       // For assigned channels, same chatJid = same unified session, no preemption needed.
       if (state.idleWaiting) {
-        const sameConversation = isAssigned
+        const sameConversation = options.isAssigned
           ? state.activeChatJid === chatJid
           : state.activeChatJid === chatJid && state.activeThreadTs === threadTs;
         if (!sameConversation) {
@@ -229,7 +259,7 @@ export class GroupQueue {
       this.drainWaiting();
       return;
     }
-    const { chatJid, threadTs } = conversation;
+    const { chatJid, threadTs, replyAnchorTs } = conversation;
     state.active = true;
     state.idleWaiting = false;
     state.isTaskContainer = false;
@@ -244,16 +274,16 @@ export class GroupQueue {
 
     try {
       if (this.processMessagesFn) {
-        const success = await this.processMessagesFn(chatJid, groupKey, threadTs);
+        const success = await this.processMessagesFn(chatJid, groupKey, threadTs, replyAnchorTs);
         if (success) {
           state.retryCount = 0;
         } else {
-          this.scheduleRetry(groupKey, state, chatJid, threadTs);
+          this.scheduleRetry(groupKey, state, chatJid, threadTs, replyAnchorTs);
         }
       }
     } catch (err) {
       logger.error({ groupKey, chatJid, threadTs, err }, 'Error processing messages for group');
-      this.scheduleRetry(groupKey, state, chatJid, threadTs);
+      this.scheduleRetry(groupKey, state, chatJid, threadTs, replyAnchorTs);
     } finally {
       state.active = false;
       state.process = null;
@@ -295,7 +325,13 @@ export class GroupQueue {
     }
   }
 
-  private scheduleRetry(groupKey: string, state: GroupState, chatJid: string, threadTs: string): void {
+  private scheduleRetry(
+    groupKey: string,
+    state: GroupState,
+    chatJid: string,
+    threadTs: string,
+    replyAnchorTs?: string,
+  ): void {
     state.retryCount++;
     if (state.retryCount > MAX_RETRIES) {
       logger.error(
@@ -313,7 +349,7 @@ export class GroupQueue {
     );
     setTimeout(() => {
       if (!this.shuttingDown) {
-        this.enqueueMessageCheck(chatJid, groupKey, threadTs);
+        this.enqueueMessageCheck(chatJid, groupKey, threadTs, { replyAnchorTs });
       }
     }, delayMs);
   }

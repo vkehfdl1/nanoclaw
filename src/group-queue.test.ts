@@ -455,6 +455,24 @@ describe('GroupQueue', () => {
     ]);
   });
 
+  it('passes the preserved reply anchor to message processing', async () => {
+    const processMessages = vi.fn(async () => true);
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('slack:C111', 'pm-autorag', '__channel__', {
+      isAssigned: true,
+      replyAnchorTs: '1772869769.173069',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(processMessages).toHaveBeenCalledWith(
+      'slack:C111',
+      'pm-autorag',
+      '__channel__',
+      '1772869769.173069',
+    );
+  });
+
   it('does NOT preempt idle assigned-channel container when new message is for same chatJid', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;

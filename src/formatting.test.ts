@@ -6,6 +6,7 @@ import {
   escapeXml,
   formatMessages,
   formatOutbound,
+  parseReplyAudit,
   normalizeSlackMarkdown,
   stripInternalTags,
 } from './router.js';
@@ -262,6 +263,52 @@ describe('formatOutbound', () => {
 
   it('normalizes links in output', () => {
     expect(formatOutbound('[link](http://x.com)')).toBe('link (http://x.com)');
+  });
+});
+
+describe('parseReplyAudit', () => {
+  it('parses a valid reply audit from the final internal block', () => {
+    expect(
+      parseReplyAudit('Visible text\n<internal>{"reply_audit":{"reply_needed":true,"reply_sent":false,"reason":"needs summary"}}</internal>'),
+    ).toEqual({
+      kind: 'valid',
+      audit: {
+        reply_needed: true,
+        reply_sent: false,
+        reason: 'needs summary',
+      },
+    });
+  });
+
+  it('returns missing when no internal audit exists', () => {
+    expect(parseReplyAudit('Visible text only')).toEqual({ kind: 'missing' });
+  });
+
+  it('returns malformed for unclosed internal blocks', () => {
+    expect(parseReplyAudit('<internal>{"reply_audit":')).toEqual({
+      kind: 'malformed',
+      error: 'Unclosed <internal> block',
+    });
+  });
+
+  it('returns malformed when the final internal block is not valid audit JSON', () => {
+    expect(parseReplyAudit('<internal>{"reply_audit":{"reply_needed":"yes"}}</internal>')).toEqual({
+      kind: 'malformed',
+      error: 'reply_audit.reply_needed must be boolean',
+    });
+  });
+
+  it('uses the final internal block when earlier internal blocks contain non-audit text', () => {
+    expect(
+      parseReplyAudit('<internal>scratchpad</internal>\nDone\n<internal>{"reply_audit":{"reply_needed":false,"reply_sent":false,"reason":"silent wrap-up"}}</internal>'),
+    ).toEqual({
+      kind: 'valid',
+      audit: {
+        reply_needed: false,
+        reply_sent: false,
+        reason: 'silent wrap-up',
+      },
+    });
   });
 });
 
