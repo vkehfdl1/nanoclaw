@@ -267,9 +267,15 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 }
 
 // Secrets to strip from Bash tool subprocess environments.
-// These are needed by claude-code for API auth but should never
-// be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+// These are needed by claude-code / MCP setup but should never
+// be visible to commands the agent runs via Bash.
+const SECRET_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'MEMBASE_MCP_BEARER_TOKEN',
+  'MEMBASE_MCP_HEADERS_JSON',
+  'NANOCLAW_GLOBAL_MCP_SERVERS_JSON',
+];
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -301,6 +307,89 @@ function sanitizeFilename(summary: string): string {
 function generateFallbackName(): string {
   const time = new Date();
   return `conversation-${time.getHours().toString().padStart(2, '0')}${time.getMinutes().toString().padStart(2, '0')}`;
+}
+
+function parseJsonObject(
+  raw: string | undefined,
+  envName: string,
+): Record<string, unknown> | undefined {
+  if (!raw?.trim()) return undefined;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) {
+      log(`${envName} must parse to a JSON object`);
+      return undefined;
+    }
+    return parsed;
+  } catch (err) {
+    log(`Failed to parse ${envName}: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
+
+function parseStringRecord(
+  raw: string | undefined,
+  envName: string,
+): Record<string, string> | undefined {
+  const parsed = parseJsonObject(raw, envName);
+  if (!parsed) return undefined;
+
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (typeof value !== 'string') {
+      log(`${envName} values must be strings (${key})`);
+      return undefined;
+    }
+    headers[key] = value;
+  }
+  return headers;
+}
+
+function buildMcpServers(
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+  sdkEnv: Record<string, string | undefined>,
+): Record<string, unknown> {
+  const servers: Record<string, unknown> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+        ...(containerInput.threadTs
+          ? { NANOCLAW_THREAD_TS: containerInput.threadTs }
+          : {}),
+      },
+    },
+  };
+
+  const membaseUrl = sdkEnv.MEMBASE_MCP_URL?.trim();
+  if (membaseUrl) {
+    const headers = parseStringRecord(
+      sdkEnv.MEMBASE_MCP_HEADERS_JSON,
+      'MEMBASE_MCP_HEADERS_JSON',
+    ) || {};
+    const bearerToken = sdkEnv.MEMBASE_MCP_BEARER_TOKEN?.trim();
+    if (bearerToken) {
+      headers.Authorization = `Bearer ${bearerToken}`;
+    }
+
+    servers.membase = {
+      type: 'http',
+      url: membaseUrl,
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    };
+  }
+
+  const globalServers = parseJsonObject(
+    sdkEnv.NANOCLAW_GLOBAL_MCP_SERVERS_JSON,
+    'NANOCLAW_GLOBAL_MCP_SERVERS_JSON',
+  );
+
+  return globalServers ? { ...servers, ...globalServers } : servers;
 }
 
 interface ParsedMessage {
@@ -523,6 +612,8 @@ async function runQuery(
 
   const model = process.env.CLAUDE_MODEL || undefined;
   const programmaticAgents = loadProgrammaticAgents();
+  const mcpServers = buildMcpServers(mcpServerPath, containerInput, sdkEnv);
+  const allowedMcpTools = Object.keys(mcpServers).map((serverName) => `mcp__${serverName}__*`);
   const queryOptions: Record<string, unknown> = {
     model,
     cwd: '/workspace/group',
@@ -540,26 +631,15 @@ async function runQuery(
       'TeamCreate', 'TeamDelete', 'SendMessage',
       'TodoWrite', 'ToolSearch', 'Skill',
       'NotebookEdit',
-      'mcp__nanoclaw__*'
+      'mcp__list_resources',
+      'mcp__read_resource',
+      ...allowedMcpTools,
     ],
     env: sdkEnv,
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
     settingSources: ['project', 'user'],
-    mcpServers: {
-      nanoclaw: {
-        command: 'node',
-        args: [mcpServerPath],
-        env: {
-          NANOCLAW_CHAT_JID: containerInput.chatJid,
-          NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-          NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          ...(containerInput.threadTs
-            ? { NANOCLAW_THREAD_TS: containerInput.threadTs }
-            : {}),
-        },
-      },
-    },
+    mcpServers,
     hooks: {
       PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],

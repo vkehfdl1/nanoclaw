@@ -49,6 +49,11 @@ vi.mock('fs', async () => {
   };
 });
 
+// Mock env loader
+vi.mock('./env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
+
 // Mock mount-security
 vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
@@ -89,6 +94,7 @@ vi.mock('child_process', async () => {
 import { runContainerAgent, runTaskSnippet, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { readEnvFile } from './env.js';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -115,6 +121,8 @@ describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fakeProc = createFakeProcess();
+    vi.mocked(readEnvFile).mockReset();
+    vi.mocked(readEnvFile).mockReturnValue({});
   });
 
   afterEach(() => {
@@ -294,6 +302,50 @@ describe('container-runner timeout behavior', () => {
     expect(tmpfsPaths.some((p) => p.includes('../bad'))).toBe(false);
   });
 
+  it('adds tmpfs overlays for default SecondBrain exclude patterns', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => {
+      const p = String(filePath);
+      return p === '/tmp/nanoclaw-test-groups/global' ||
+        p.endsWith('/node_modules') ||
+        p.endsWith('/.venv') ||
+        p.endsWith('/__pycache__') ||
+        p.endsWith('/.pytest_cache') ||
+        p.endsWith('/.mypy_cache');
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-secondbrain-tmpfs',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    const tmpfsPaths: string[] = [];
+    for (let i = 0; i < spawnArgs.length; i += 1) {
+      if (spawnArgs[i] === '--tmpfs') {
+        tmpfsPaths.push(spawnArgs[i + 1]);
+      }
+    }
+
+    expect(tmpfsPaths).toContain('/workspace/secondbrain/node_modules');
+    expect(tmpfsPaths).toContain('/workspace/secondbrain/.venv');
+    expect(tmpfsPaths).toContain('/workspace/secondbrain/__pycache__');
+    expect(tmpfsPaths).toContain('/workspace/secondbrain/.pytest_cache');
+    expect(tmpfsPaths).toContain('/workspace/secondbrain/.mypy_cache');
+  });
+
   it('defaults PM agents to claude-opus-4-6 when no explicit model is configured', async () => {
     vi.mocked(fs.existsSync).mockImplementation((filePath) => {
       const p = String(filePath);
@@ -428,6 +480,51 @@ describe('container-runner timeout behavior', () => {
       '/tmp/nanoclaw-test-data/sessions/test-group/agent-runner-src',
       expect.objectContaining({ recursive: true, force: true }),
     );
+  });
+
+  it('passes global MCP config through stdin secrets instead of docker args', async () => {
+    vi.mocked(readEnvFile).mockImplementation((keys: string[]) => {
+      if (keys.includes('MEMBASE_MCP_URL')) {
+        return {
+          MEMBASE_MCP_URL: 'https://mcp.membase.so/mcp',
+          MEMBASE_MCP_BEARER_TOKEN: 'secret-token',
+        };
+      }
+      return {} as Record<string, string>;
+    });
+
+    let stdinPayload = '';
+    fakeProc.stdin.on('data', (chunk) => {
+      stdinPayload += chunk.toString();
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'ok',
+      newSessionId: 'session-mcp',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    const spawnArgs = vi.mocked(spawn).mock.calls.at(-1)?.[1] as string[];
+    expect(spawnArgs.some((arg) => arg.includes('MEMBASE_MCP_URL='))).toBe(false);
+    expect(spawnArgs.some((arg) => arg.includes('secret-token'))).toBe(false);
+
+    const parsedInput = JSON.parse(stdinPayload);
+    expect(parsedInput.secrets).toMatchObject({
+      MEMBASE_MCP_URL: 'https://mcp.membase.so/mcp',
+      MEMBASE_MCP_BEARER_TOKEN: 'secret-token',
+    });
   });
 
   it('runs javascript task snippets with node as the container entrypoint', async () => {

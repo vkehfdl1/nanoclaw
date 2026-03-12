@@ -34,6 +34,13 @@ import { RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const SECONDBRAIN_EXCLUDE_PATTERNS = [
+  '.venv',
+  'node_modules',
+  '__pycache__',
+  '.pytest_cache',
+  '.mypy_cache',
+];
 
 export interface ContainerInput {
   prompt: string;
@@ -255,6 +262,7 @@ function buildVolumeMounts(
     hostPath: SECONDBRAIN_DIR,
     containerPath: '/workspace/secondbrain',
     readonly: false,
+    excludePatterns: SECONDBRAIN_EXCLUDE_PATTERNS,
   });
 
   // Copy agent-runner source into a per-group writable location so agents
@@ -290,7 +298,14 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  return readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'NANOCLAW_GLOBAL_MCP_SERVERS_JSON',
+    'MEMBASE_MCP_URL',
+    'MEMBASE_MCP_BEARER_TOKEN',
+    'MEMBASE_MCP_HEADERS_JSON',
+  ]);
 }
 
 function buildContainerArgs(

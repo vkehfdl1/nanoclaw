@@ -45,6 +45,18 @@ Compared to the upstream NanoClaw baseline, this repository currently includes:
 - **Per-agent model override** via `containerConfig.model` (for example, main on Opus and another agent on Sonnet).
 - **Extended `register_group` MCP tool** with optional `requires_trigger` and `model` fields, plus Slack JID guidance (`slack:<CHANNEL_ID>`).
 - **Host skills sync improvements**: syncs from both `~/.agent/skills` and `~/.agents/skills`, and now skips broken/unreadable skill entries instead of failing container startup.
+- **Global MCP injection for all agents**: set `MEMBASE_MCP_URL` or `NANOCLAW_GLOBAL_MCP_SERVERS_JSON` in `.env` and every container agent gets those MCP servers automatically.
+
+Example global MCP config:
+
+```env
+MEMBASE_MCP_URL=https://mcp.membase.so/mcp
+# Optional when the remote server requires auth
+MEMBASE_MCP_BEARER_TOKEN=your-token
+
+# Or define multiple global MCP servers explicitly as JSON
+NANOCLAW_GLOBAL_MCP_SERVERS_JSON={"membase":{"type":"http","url":"https://mcp.membase.so/mcp"}}
+```
 
 ## Philosophy
 

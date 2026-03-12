@@ -89,6 +89,13 @@ function ensureMainRegistration(): void {
     role: 'main',
     containerConfig: {
       model: 'claude-opus-4-6',
+      additionalMounts: [
+        {
+          hostPath: '/Volumes/Mac_drive/03_Videos/youtube',
+          containerPath: 'youtube',
+          readonly: false,
+        },
+      ],
     },
   });
 }

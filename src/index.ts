@@ -28,7 +28,6 @@ import {
   getAllRegisteredGroups,
   getAllTasks,
   getAllUniqueAgents,
-  getMessageById,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -390,17 +389,6 @@ function resolveReplyThreadTs(
     ?? contextMessages[0]?.id;
 }
 
-function isReplyToAgentOwnedThread(
-  chatJid: string,
-  threadTs: string,
-  group: RegisteredGroup,
-): boolean {
-  if (threadTs === '__channel__') return false;
-  const root = getMessageById(chatJid, threadTs);
-  if (!root?.is_bot_message) return false;
-  return (root.agent_source ?? '').trim().toLowerCase() === group.name.trim().toLowerCase();
-}
-
 export function _mergeConversationContextForTests(
   channelMessages: NewMessage[],
   threadMessages: NewMessage[],
@@ -414,14 +402,6 @@ export function _resolveReplyThreadTsForTests(
   replyAnchorTs?: string,
 ): string | undefined {
   return resolveReplyThreadTs(threadTs, contextMessages, replyAnchorTs);
-}
-
-export function _isReplyToAgentOwnedThreadForTests(
-  chatJid: string,
-  threadTs: string,
-  group: RegisteredGroup,
-): boolean {
-  return isReplyToAgentOwnedThread(chatJid, threadTs, group);
 }
 
 export function _hadIpcDeliverySinceForTests(
@@ -951,8 +931,7 @@ async function startMessageLoop(): Promise<void> {
               const hasMatch = convoMessages.some((m) =>
                 evaluateGateway(m, group, chatJid),
               );
-              const ownsThread = agentAssigned && isReplyToAgentOwnedThread(chatJid, threadTs, group);
-              if (!hasMatch && !ownsThread) continue;
+              if (!hasMatch) continue;
             }
 
             if (agentAssigned) {
