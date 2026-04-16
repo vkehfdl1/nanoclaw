@@ -46,6 +46,7 @@ export interface ContainerInput {
   prompt: string;
   sessionId?: string;
   groupFolder: string;
+  groupRole?: string;
   chatJid: string;
   threadTs?: string;
   isMain: boolean;
@@ -175,6 +176,7 @@ function buildVolumeMounts(
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
+  const remoteSettingsFile = path.join(groupSessionsDir, 'remote-settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(settingsFile, JSON.stringify({
       env: {
@@ -189,6 +191,9 @@ function buildVolumeMounts(
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
       },
     }, null, 2) + '\n');
+  }
+  if (!fs.existsSync(remoteSettingsFile)) {
+    fs.writeFileSync(remoteSettingsFile, '{}\n');
   }
 
   // Sync built-in and host-level skills into each group's .claude/skills/
@@ -454,6 +459,7 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
+    input.groupRole = group.role;
     input.secrets = readSecrets();
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();

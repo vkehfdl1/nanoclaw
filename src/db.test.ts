@@ -349,8 +349,8 @@ describe('storeChatMetadata', () => {
 
 // --- Registered group lookups ---
 
-describe('registered_groups one-to-one lookups', () => {
-  it('moves an agent folder to the newest registered channel JID', () => {
+describe('registered_groups channel lookups', () => {
+  it('allows an agent folder to be registered to multiple channel JIDs', () => {
     setRegisteredGroup('slack:C111', {
       name: 'PM Agent',
       folder: 'pm-autorag',
@@ -373,12 +373,13 @@ describe('registered_groups one-to-one lookups', () => {
     });
 
     const all = getAllRegisteredGroups();
+    expect(all['slack:C111']).toBeDefined();
     expect(all['slack:C222']).toBeDefined();
+    expect(all['slack:C111'].folder).toBe('pm-autorag');
     expect(all['slack:C222'].folder).toBe('pm-autorag');
-    expect(all['slack:C111']).toBeUndefined();
   });
 
-  it('getChannelsForAgent returns the single registered channel JID for a folder', () => {
+  it('getChannelsForAgent returns every registered channel JID for a folder', () => {
     setRegisteredGroup('slack:C111', {
       name: 'PM Agent',
       folder: 'pm-autorag',
@@ -397,7 +398,7 @@ describe('registered_groups one-to-one lookups', () => {
     });
 
     const channels = getChannelsForAgent('pm-autorag');
-    expect(channels).toEqual(['slack:C222']);
+    expect(channels).toEqual(['slack:C111', 'slack:C222']);
   });
 
   it('replaces an existing channel agent when the channel is re-registered', () => {
@@ -518,6 +519,29 @@ describe('default agent registrations', () => {
 
     const dobby = agentsInChannel.find((g) => g.folder === 'main');
     expect(dobby).toBeUndefined();
+  });
+
+  it('registers 태식 across the requested Slack channels with mention-only routing', () => {
+    _ensureDefaultAgentRegistrationsForTests();
+
+    const channels = getChannelsForAgent('taesik');
+    expect(channels).toEqual([
+      'slack:C043L5QJQ0J',
+      'slack:C0449SHAHL0',
+      'slack:C0461TVLF5W',
+      'slack:C0ANTLF850R',
+      'slack:C0AP0832BF0',
+    ]);
+
+    for (const channel of channels) {
+      const taesik = getAgentsByChannel(channel).find((g) => g.folder === 'taesik');
+      expect(taesik).toBeDefined();
+      expect(taesik!.name).toBe('태식');
+      expect(taesik!.aliases).toEqual(['태식']);
+      expect(taesik!.requiresTrigger).toBe(true);
+      expect(taesik!.gateway).toEqual({ rules: [{ match: 'self_mention' }] });
+      expect(taesik!.containerConfig).toBeUndefined();
+    }
   });
 });
 

@@ -36,6 +36,14 @@ const MARKETER_FOLDER = 'marketer';
 const MARKETER_CHANNEL_JID = 'slack:C0AJ9U1DB25';
 const TODOMON_CHANNEL_JID = 'slack:C0AH3SVQL4C';
 const TODOMON_FOLDER = 'todomon';
+const TAESIK_FOLDER = 'taesik';
+const TAESIK_CHANNEL_JIDS = [
+  'slack:C0461TVLF5W', // 개발
+  'slack:C043L5QJQ0J', // 공지
+  'slack:C0ANTLF850R', // 아이디어
+  'slack:C0449SHAHL0', // 자료-공유
+  'slack:C0AP0832BF0', // 철박사님만없는방
+] as const;
 
 function ensureDefaultRegisteredGroup(
   jid: string,
@@ -120,7 +128,7 @@ function ensurePmAutoragRegistration(): void {
       },
       additionalMounts: [
         {
-          hostPath: '~/Projects/AutoRAG-Research',
+          hostPath: '~/PycharmProjects/AutoRAG-Research',
           containerPath: 'autorag-research',
           readonly: true,
           excludePatterns: [
@@ -187,11 +195,28 @@ function ensureTodomonRegistration(): void {
   });
 }
 
+function ensureTaesikRegistrations(): void {
+  for (const jid of TAESIK_CHANNEL_JIDS) {
+    ensureDefaultRegisteredGroup(jid, {
+      name: '태식',
+      folder: TAESIK_FOLDER,
+      trigger: '@태식',
+      aliases: ['태식'],
+      requiresTrigger: true,
+      gateway: {
+        rules: [{ match: 'self_mention' }],
+      },
+      role: 'agent',
+    });
+  }
+}
+
 function ensureDefaultAgentRegistrations(): void {
   ensureMainRegistration();
   ensurePmAutoragRegistration();
   ensureMarketerRegistration();
   ensureTodomonRegistration();
+  ensureTaesikRegistrations();
 }
 
 function createSchema(database: Database.Database): void {
@@ -272,7 +297,7 @@ function createSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
+      folder TEXT NOT NULL,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
@@ -419,7 +444,62 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Enforce one channel <-> one agent registration on existing DBs.
+  // Migrate older registered_groups schemas that enforced folder uniqueness.
+  try {
+    const tableInfo = database
+      .prepare(
+        `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'registered_groups'`,
+      )
+      .get() as { sql?: string } | undefined;
+    const schemaSql = tableInfo?.sql ?? '';
+    if (schemaSql.includes('folder TEXT NOT NULL UNIQUE')) {
+      database.exec(`
+        ALTER TABLE registered_groups RENAME TO registered_groups_legacy;
+        CREATE TABLE registered_groups (
+          jid TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          folder TEXT NOT NULL,
+          trigger_pattern TEXT NOT NULL,
+          added_at TEXT NOT NULL,
+          container_config TEXT,
+          requires_trigger INTEGER DEFAULT 1,
+          role TEXT,
+          aliases TEXT,
+          gateway TEXT
+        );
+        INSERT INTO registered_groups (
+          jid,
+          name,
+          folder,
+          trigger_pattern,
+          added_at,
+          container_config,
+          requires_trigger,
+          role,
+          aliases,
+          gateway
+        )
+        SELECT
+          jid,
+          name,
+          folder,
+          trigger_pattern,
+          added_at,
+          container_config,
+          requires_trigger,
+          role,
+          aliases,
+          gateway
+        FROM registered_groups_legacy;
+        DROP TABLE registered_groups_legacy;
+      `);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Could not migrate registered_groups schema for multi-channel folders');
+  }
+
+  // Keep one primary assigned agent per channel while allowing an agent
+  // folder to be assigned to multiple channels.
   try {
     database.exec(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_groups_jid_unique ON registered_groups(jid)`,
@@ -431,14 +511,9 @@ function createSchema(database: Database.Database): void {
     );
   }
   try {
-    database.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_registered_groups_folder_unique ON registered_groups(folder)`,
-    );
+    database.exec(`DROP INDEX IF EXISTS idx_registered_groups_folder_unique`);
   } catch (err) {
-    logger.warn(
-      { err },
-      'Could not enforce unique agent-folder registration on registered_groups.folder',
-    );
+    logger.warn({ err }, 'Could not drop legacy unique folder index on registered_groups.folder');
   }
 
   database.exec(`
@@ -1286,9 +1361,6 @@ export function setRegisteredGroup(
     db.prepare(
       'DELETE FROM registered_groups WHERE jid = ? AND folder != ?',
     ).run(jid, group.folder);
-    db.prepare(
-      'DELETE FROM registered_groups WHERE folder = ? AND jid != ?',
-    ).run(group.folder, jid);
     db.prepare(
       `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, role, aliases, gateway)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

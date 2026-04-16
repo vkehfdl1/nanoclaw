@@ -23,14 +23,14 @@
       "prompt": "Run weekly content planning.\n\n1. Review this week's research outputs in /workspace/group/research/ and /workspace/group/insights/.\n2. Review the local operating log at /workspace/group/published/log.md. This file is not in SecondBrain.\n3. Build next week's plan in /workspace/group/campaigns/weekly-$(date +%Y-%m-%d).md with:\n   - platform-by-platform topic lineup\n   - target audience intent per post\n   - the concrete fact or signal each post is based on\n   - recommended CTA or takeaway\n   - draft priority (high/medium/low)\n4. Do not publish or auto-draft from this task. This task is for planning and prioritization only.\n5. Send a Korean Slack summary via mcp__nanoclaw__send_message with:\n   [주간 콘텐츠 계획]\n   - 이번 주 핵심 주제 3개\n   - 우선순위 high 아이템\n   - 보류해도 되는 아이템\n   마지막 줄: \"승인해 주시면 우선순위 높은 항목부터 초안을 준비하겠습니다.\""
     },
     {
-      "id": "marketer-comment-sweep",
-      "name": "Periodic Comment Monitoring Sweep",
-      "description": "Check recent comments, prepare reply drafts, and ask for human approval in Korean before posting.",
+      "id": "marketer-reddit-slides-leads",
+      "name": "Reddit Slides Lead Monitor",
+      "description": "Reddit에서 Claude Code/Codex로 HTML 슬라이드/PPT/프레젠테이션 관련 질문 게시물을 찾아 Jeffrey에게 링크 보고.",
       "enabled": true,
       "schedule_type": "cron",
-      "schedule_value": "0 */6 * * *",
-      "context_mode": "group",
-      "prompt": "Run a comment monitoring sweep across all recently published posts.\n\n1. Check /workspace/group/published/log.md for posts published in the last 7 days.\n2. For each recent post, check for new comments or replies using agent-browser or platform tools.\n3. Classify each comment into one of three buckets:\n   - no-reply-needed\n   - draft-reply\n   - urgent-human-review\n4. For no-reply-needed items, note \"like only\" or \"no action\" in /workspace/group/published/comments-log.md.\n5. For draft-reply items, write a proposed reply but do not post it.\n6. For urgent-human-review items, summarize the situation without drafting a risky answer.\n7. Send one Korean Slack message via mcp__nanoclaw__send_message using this structure:\n   [댓글/답글 검토 요청]\n   - 플랫폼 / 게시물 / 원문 요약\n   - 분류: no-reply-needed | draft-reply | urgent-human-review\n   - 제안 답글: {draft or \"없음\"}\n   마지막 줄: \"승인해 주시면 해당 답글만 게시하겠습니다. 승인 전에는 아무 응답도 게시하지 않겠습니다.\"\n8. Log every reviewed item to /workspace/group/published/comments-log.md with status pending_approval, no_reply_needed, or approved_and_posted.\n9. Stop after sending the Korean approval request. Do not post any reply in this scheduled task unless explicit approval already exists in the current Slack thread."
-    }
+      "schedule_value": "0 */12 * * *",
+      "context_mode": "isolated",
+      "prompt": "Reddit에서 Claude Code 또는 Codex로 HTML 슬라이드, PPT, 프레젠테이션을 만드는 데 어려움을 겪거나 질문하는 게시물을 찾아 Jeffrey에게 보고하라.\n\n## 검색 방법\n\n다음 웹 검색 쿼리들을 실행한다:\n\n1. `site:reddit.com \"claude code\" (slides OR presentation OR PPT OR \"html slides\") (help OR how OR problem OR issue OR question)`\n2. `site:reddit.com \"codex\" (slides OR presentation OR PPT OR \"html slides\") (help OR how OR question)`\n3. `site:reddit.com \"claude\" \"html\" \"presentation\" (help OR question OR issue)`\n\n## 필터링 기준\n\n다음 조건에 맞는 게시물만 선택한다:\n- Claude Code, Claude, 또는 Codex를 사용해서 HTML 슬라이드, 발표자료, PPT를 만들려는 사람\n- 질문하거나 어려움을 겪고 있는 게시물 (이미 해결된 게시물도 포함)\n- 게시일이 최근 7일 이내인 게시물 우선 (오래된 것도 아직 활성화된 것이면 포함)\n\n## 중복 제거\n\n/workspace/group/published/reddit-slides-leads.json 파일이 있으면 읽어서 이미 보고한 URL은 제외한다. 없으면 새로 만든다.\n\n## 보고\n\n새로운 게시물이 있으면:\n1. /workspace/group/published/reddit-slides-leads.json에 URL, 제목, 날짜, subreddit 저장 (reported: true 포함)\n2. mcp__nanoclaw__send_message로 다음 형식으로 보고:\n\n[Reddit 슬라이드 리드]\n찾은 게시물 목록:\n- {subreddit} | {제목} | {URL}\n- ...\n댓글 달기 전에 확인해주세요.\n\n새로운 게시물이 없으면 아무것도 보내지 않는다 (침묵)."
+    },
   ]
 }

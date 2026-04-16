@@ -15,6 +15,7 @@
 - `@young-gu`, `@영구`: PM agent for AutoRAG Research.
 - `@marketer`, `@홍명보`, `@명보`: marketer.
 - `@todomon`, `@투두몬`: task manager.
+- `@태식`: mention-only friend persona agent.
 - Additional project PM agents may also exist; use the alias shown in the channel members list when available.
 
 ## Agent Routing

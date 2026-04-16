@@ -23,6 +23,7 @@ interface ContainerInput {
   prompt: string;
   sessionId?: string;
   groupFolder: string;
+  groupRole?: string;
   chatJid: string;
   threadTs?: string;
   isMain: boolean;
@@ -70,6 +71,44 @@ const SUBAGENT_CONFIG_PATHS = [
   '/workspace/group/.nanoclaw/subagents.json',
   '/workspace/group/.claude/subagents.json',
 ];
+
+function isDirectCodingRestrictedGroup(input: Pick<ContainerInput, 'groupFolder' | 'groupRole'>): boolean {
+  return input.groupRole === 'pm-agent'
+    || input.groupFolder === 'pm-agent'
+    || input.groupFolder.startsWith('pm-');
+}
+
+function getAllowedMcpTools(
+  mcpServerNames: string[],
+  directCodingRestricted: boolean,
+): string[] {
+  const allowedTools: string[] = [];
+
+  for (const serverName of mcpServerNames) {
+    if (serverName !== 'nanoclaw') {
+      if (!directCodingRestricted) {
+        allowedTools.push(`mcp__${serverName}__*`);
+      }
+      continue;
+    }
+
+    if (!directCodingRestricted) {
+      allowedTools.push(`mcp__${serverName}__*`);
+      continue;
+    }
+
+    allowedTools.push(
+      'mcp__nanoclaw__send_message',
+      'mcp__nanoclaw__send_agent_message',
+      'mcp__nanoclaw__gh_issue_list',
+      'mcp__nanoclaw__gh_issue_comment',
+      'mcp__nanoclaw__gh_issue_linked_prs',
+      'mcp__nanoclaw__write_secondbrain_insight',
+    );
+  }
+
+  return allowedTools;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -613,7 +652,27 @@ async function runQuery(
   const model = process.env.CLAUDE_MODEL || undefined;
   const programmaticAgents = loadProgrammaticAgents();
   const mcpServers = buildMcpServers(mcpServerPath, containerInput, sdkEnv);
-  const allowedMcpTools = Object.keys(mcpServers).map((serverName) => `mcp__${serverName}__*`);
+  const directCodingRestricted = isDirectCodingRestrictedGroup(containerInput);
+  const allowedMcpTools = getAllowedMcpTools(Object.keys(mcpServers), directCodingRestricted);
+  const allowedTools = [
+    ...(directCodingRestricted ? [] : ['Bash']),
+    'Read', 'Write', 'Edit', 'Glob', 'Grep',
+    'WebSearch', 'WebFetch',
+    'Task', 'TaskOutput', 'TaskStop',
+    'TeamCreate', 'TeamDelete', 'SendMessage',
+    'TodoWrite', 'ToolSearch', 'Skill',
+    'NotebookEdit',
+    'mcp__list_resources',
+    'mcp__read_resource',
+    ...allowedMcpTools,
+  ].filter((toolName) => {
+    if (!directCodingRestricted) return true;
+    return toolName !== 'Write' && toolName !== 'Edit' && toolName !== 'NotebookEdit';
+  });
+
+  if (directCodingRestricted) {
+    log(`Direct coding and implementation delegation tools disabled for group ${containerInput.groupFolder}`);
+  }
   const queryOptions: Record<string, unknown> = {
     model,
     cwd: '/workspace/group',
@@ -623,18 +682,7 @@ async function runQuery(
     systemPrompt: globalClaudeMd
       ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
       : undefined,
-    allowedTools: [
-      'Bash',
-      'Read', 'Write', 'Edit', 'Glob', 'Grep',
-      'WebSearch', 'WebFetch',
-      'Task', 'TaskOutput', 'TaskStop',
-      'TeamCreate', 'TeamDelete', 'SendMessage',
-      'TodoWrite', 'ToolSearch', 'Skill',
-      'NotebookEdit',
-      'mcp__list_resources',
-      'mcp__read_resource',
-      ...allowedMcpTools,
-    ],
+    allowedTools,
     env: sdkEnv,
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
@@ -642,7 +690,9 @@ async function runQuery(
     mcpServers,
     hooks: {
       PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-      PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
+      PreToolUse: directCodingRestricted
+        ? []
+        : [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
     },
   };
   if (programmaticAgents) {

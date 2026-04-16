@@ -178,4 +178,41 @@ describe('reply audit decision helper', () => {
       reason: 'corrective_visible_reply_still_missing',
     });
   });
+
+  it('overrides reply_needed=false when self_mention is detected', () => {
+    const audit: ReplyAuditParseResult = {
+      kind: 'valid',
+      audit: {
+        reply_needed: false,
+        reply_sent: false,
+        reason: 'no actionable response needed',
+      },
+    };
+
+    expect(
+      _evaluateReplyAuditOutcomeForTests(audit, false, false, false, true),
+    ).toEqual({
+      action: 'correct',
+      reason: 'self_mention_override:agent_said_no_reply_but_user_mentioned_by_name',
+      correctionMode: 'send_visible_reply',
+    });
+  });
+
+  it('allows silent completion for self_mention when reply was already delivered', () => {
+    const audit: ReplyAuditParseResult = {
+      kind: 'valid',
+      audit: {
+        reply_needed: false,
+        reply_sent: false,
+        reason: 'no actionable response needed',
+      },
+    };
+
+    expect(
+      _evaluateReplyAuditOutcomeForTests(audit, true, false, false, true),
+    ).toEqual({
+      action: 'none',
+      reason: 'silent_ok:no actionable response needed',
+    });
+  });
 });

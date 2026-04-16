@@ -156,6 +156,7 @@ function evaluateReplyAuditOutcome(
   visibleReplyDelivered: boolean,
   correctionAttempted: boolean,
   expectedVisibleReply: boolean,
+  hasSelfMention = false,
 ): ReplyAuditDecision {
   if (expectedVisibleReply) {
     if (visibleReplyDelivered) {
@@ -175,6 +176,16 @@ function evaluateReplyAuditOutcome(
 
   if (auditResult.kind === 'valid') {
     if (!auditResult.audit.reply_needed) {
+      // Override: if the agent was triggered by a self_mention, a reply is always required
+      if (hasSelfMention && !visibleReplyDelivered) {
+        return correctionAttempted
+          ? { action: 'protocol_violation', reason: 'self_mention_reply_needed_but_missing_after_correction' }
+          : {
+              action: 'correct',
+              reason: 'self_mention_override:agent_said_no_reply_but_user_mentioned_by_name',
+              correctionMode: 'send_visible_reply',
+            };
+      }
       return { action: 'none', reason: `silent_ok:${auditResult.audit.reason}` };
     }
     if (visibleReplyDelivered) {
@@ -426,12 +437,14 @@ export function _evaluateReplyAuditOutcomeForTests(
   visibleReplyDelivered: boolean,
   correctionAttempted: boolean,
   expectedVisibleReply: boolean,
+  hasSelfMention = false,
 ): ReplyAuditDecision {
   return evaluateReplyAuditOutcome(
     auditResult,
     visibleReplyDelivered,
     correctionAttempted,
     expectedVisibleReply,
+    hasSelfMention,
   );
 }
 
@@ -503,6 +516,12 @@ async function processGroupMessages(
     const hasMatch = contextMessages.some((m) => evaluateGateway(m, group, chatJid));
     if (!hasMatch) return true;
   }
+
+  // Detect self_mention: if any non-bot context message mentions this agent by alias,
+  // force reply_needed even if the agent decides otherwise.
+  const hasSelfMention = contextMessages.some(
+    (m) => !m.is_from_me && !m.is_bot_message && matchesAlias(m.content, group.aliases),
+  );
 
   const prompt = await prependChannelMembersToPrompt(
     chatJid,
@@ -609,6 +628,7 @@ async function processGroupMessages(
           expectedVisibleReplyForQuery
           || latestReplyAudit.kind !== 'valid'
           || latestReplyAudit.audit.reply_needed
+          || hasSelfMention
         )
       ) {
         visibleReplyDelivered = await waitForRecentIpcDelivery(
@@ -623,6 +643,7 @@ async function processGroupMessages(
         visibleReplyDelivered,
         correctionAttemptedForTurn,
         expectedVisibleReplyForQuery,
+        hasSelfMention,
       );
 
       if (decision.action === 'correct' && decision.correctionMode) {
