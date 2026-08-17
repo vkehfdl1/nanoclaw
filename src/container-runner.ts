@@ -203,6 +203,7 @@ function buildVolumeMounts(
     path.join(process.cwd(), 'container', 'skills'),
     path.join(homeDir, '.agent', 'skills'),
     path.join(homeDir, '.agents', 'skills'),
+    path.join(homeDir, 'Projects', 'k-skill'),
   ];
   const seenSources = new Set<string>();
 
@@ -231,6 +232,8 @@ function buildVolumeMounts(
         continue;
       }
       if (!stat.isDirectory()) continue;
+      // Only sync directories that contain a SKILL.md file
+      if (!fs.existsSync(path.join(srcDir, 'SKILL.md'))) continue;
       const dstDir = path.join(skillsDst, skillDir);
       try {
         fs.cpSync(srcDir, dstDir, { recursive: true });
